@@ -1,0 +1,11 @@
+# Build output (Visual Studio / MSBuild)
+x64/
+Release/
+Debug/
+bin/
+obj/
+.vs/
+*.user
+*.aps
+*.ipch
+*.VC.db

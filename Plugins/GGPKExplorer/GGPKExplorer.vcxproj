@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Dbg|x64">
+      <Configuration>Dbg</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{C4D5E6F7-A8B9-4C0D-1E2F-3A4B5C6D7E8F}</ProjectGuid>
+    <RootNamespace>GGPKExplorer</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)x64\Release\Plugins\GGPKExplorer\</OutDir>
+    <IntDir>$(SolutionDir)x64\Release\Plugins\GGPKExplorer\intermediate\</IntDir>
+    <TargetName>GGPKExplorer</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">
+    <OutDir>$(SolutionDir)x64\Dbg\Plugins\GGPKExplorer\</OutDir>
+    <IntDir>$(SolutionDir)x64\Dbg\Plugins\GGPKExplorer\intermediate\</IntDir>
+    <TargetName>GGPKExplorer</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>PLUGIN_EXPORTS;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)core;$(ProjectDir)lib;$(ProjectDir)lib\ggpk;$(ProjectDir)lib\DirectXTex;$(SolutionDir)POEFixer;$(SolutionDir)POEFixer\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>bcrypt.lib;comdlg32.lib;shell32.lib;ole32.lib;d3d11.lib;dxguid.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>PLUGIN_EXPORTS;_DEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)core;$(ProjectDir)lib;$(ProjectDir)lib\ggpk;$(ProjectDir)lib\DirectXTex;$(SolutionDir)POEFixer;$(SolutionDir)POEFixer\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>bcrypt.lib;comdlg32.lib;shell32.lib;ole32.lib;d3d11.lib;dxguid.lib;d3dcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="GGPKExplorer.cpp" />
+    <!-- UI panels -->
+    <ClCompile Include="ui\TreePanel.cpp" />
+    <ClCompile Include="ui\ContentPanel.cpp" />
+    <ClCompile Include="ui\SearchDialog.cpp" />
+    <ClCompile Include="ui\SearchResultsPanel.cpp" />
+    <ClCompile Include="ui\NavigationBar.cpp" />
+    <ClCompile Include="ui\KeyboardShortcuts.cpp" />
+    <ClCompile Include="ui\QuickJumpDialog.cpp" />
+    <ClCompile Include="ui\BookmarkManager.cpp" />
+    <ClCompile Include="ui\ExtractDialog.cpp" />
+    <ClCompile Include="ui\SaveAsExporter.cpp" />
+    <ClCompile Include="ui\AttachBrowseModal.cpp" />
+    <!-- Viewers -->
+    <ClCompile Include="viewers\HexViewer.cpp" />
+    <ClCompile Include="viewers\TextViewer.cpp" />
+    <ClCompile Include="viewers\ImageViewer.cpp" />
+    <ClCompile Include="viewers\DatViewer.cpp" />
+    <ClCompile Include="viewers\CellEditorPanel.cpp" />
+    <ClCompile Include="viewers\editors\PrimitiveEditor.cpp" />
+    <ClCompile Include="viewers\editors\ArrayEditor.cpp" />
+    <ClCompile Include="viewers\editors\ForeignRowEditor.cpp" />
+    <ClCompile Include="viewers\editors\FileRefEditor.cpp" />
+    <ClCompile Include="viewers\editors\GgpkTreePicker.cpp" />
+    <ClCompile Include="viewers\MatTableViewer.cpp" />
+    <ClCompile Include="viewers\MeshViewer.cpp" />
+    <ClCompile Include="viewers\AocViewer.cpp" />
+    <ClCompile Include="viewers\AocViewer_3DPreview.cpp" />
+    <ClCompile Include="viewers\AocViewer_Info.cpp" />
+    <ClCompile Include="viewers\AocViewer_Sockets.cpp" />
+    <ClCompile Include="viewers\AocViewer_Animations.cpp" />
+    <ClCompile Include="viewers\AocViewer_Diagnostic.cpp" />
+    <ClCompile Include="viewers\aoc\AocSceneGraph.cpp" />
+    <ClCompile Include="viewers\aoc\AocLightSystem.cpp" />
+    <ClCompile Include="viewers\aoc\AocAudioSystem.cpp" />
+    <ClCompile Include="viewers\mesh\MeshCamera.cpp" />
+    <ClCompile Include="viewers\mesh\MeshMaterial.cpp" />
+    <ClCompile Include="viewers\mesh\MeshRenderer.cpp" />
+    <ClCompile Include="viewers\TerrainViewer.cpp" />
+    <ClCompile Include="viewers\PsgViewer.cpp" />
+    <ClCompile Include="viewers\PsgViewer_Visual.cpp" />
+    <ClCompile Include="viewers\PsgIconCache.cpp" />
+    <ClCompile Include="viewers\AudioViewer.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <!-- Core: Infrastructure utilities -->
+    <ClCompile Include="core\BinaryReader.cpp" />
+    <ClCompile Include="core\PathUtils.cpp" />
+    <ClCompile Include="core\TextEncoding.cpp" />
+    <ClCompile Include="core\AsyncTaskRunner.cpp" />
+    <ClCompile Include="core\GGPKExplorerSettings.cpp" />
+    <!-- Core: Parsers (.cpp implementations) -->
+    <ClCompile Include="core\parsers\TerrainGridParser.cpp" />
+    <ClCompile Include="core\parsers\MatTableParser.cpp" />
+    <ClCompile Include="core\parsers\SmdHeaderParser.cpp" />
+    <ClCompile Include="core\parsers\MtpParser.cpp" />
+    <ClCompile Include="core\parsers\PsgParser.cpp" />
+    <ClCompile Include="core\parsers\CsdParser.cpp" />
+    <ClCompile Include="core\StatFormatter.cpp" />
+    <ClCompile Include="core\parsers\AmdParser.cpp" />
+    <ClCompile Include="core\parsers\SmParser.cpp" />
+    <ClCompile Include="core\parsers\AstParser.cpp" />
+    <ClCompile Include="core\parsers\AstSkeletonBuilder.cpp" />
+    <ClCompile Include="viewers\animation\AnimationPlayer.cpp" />
+    <ClCompile Include="viewers\animation\AnimationDefaults.cpp" />
+    <ClCompile Include="viewers\animation\TimelineUi.cpp" />
+    <ClCompile Include="viewers\animation\AnimationSidePanel.cpp" />
+    <ClCompile Include="viewers\animation\KeyframeDecoder.cpp" />
+    <ClCompile Include="viewers\animation\PoseComposer.cpp" />
+    <ClCompile Include="viewers\animation\PoseInterpolator.cpp" />
+    <ClCompile Include="viewers\animation\SkinningPalette.cpp" />
+    <ClCompile Include="viewers\animation\SkeletonBounds.cpp" />
+    <ClCompile Include="core\parsers\AocTokenizer.cpp" />
+    <ClCompile Include="core\parsers\AocParser.cpp" />
+    <ClCompile Include="core\parsers\AocResolver.cpp" />
+    <ClCompile Include="core\parsers\AocSkeletonAugmenter.cpp" />
+    <ClCompile Include="core\parsers\AocLightsParser.cpp" />
+    <ClCompile Include="core\parsers\AocSoundEventsParser.cpp" />
+    <ClCompile Include="core\parsers\AocParticleEffectsParser.cpp" />
+    <ClCompile Include="core\parsers\OtParser.cpp" />
+    <ClCompile Include="viewers\aoc\AocTransitionState.cpp" />
+    <ClCompile Include="viewers\aoc\AocPersistedAttachments.cpp" />
+    <ClCompile Include="viewers\aoc\AocRecentAttachments.cpp" />
+    <ClCompile Include="viewers\aoc\AocUiHelpers.cpp" />
+    <ClCompile Include="viewers\aoc\ItemVisualIdentityCatalog.cpp" />
+    <ClCompile Include="viewers\aoc\ItemIconCache.cpp" />
+    <ClCompile Include="viewers\aoc\AocParticleSystem.cpp" />
+    <ClCompile Include="core\parsers\SmdParser.cpp" />
+    <!-- Core: GGPKManager, VirtualTree, DatParser, DatSchema, Searchers -->
+    <ClCompile Include="core\GGPKManager.cpp" />
+    <ClCompile Include="core\VirtualTree.cpp" />
+    <ClCompile Include="core\DatParser.cpp" />
+    <ClCompile Include="core\DatSchema.cpp" />
+    <ClCompile Include="core\DatExport.cpp" />
+    <ClCompile Include="core\ImageExport.cpp" />
+    <ClCompile Include="core\DatImporter.cpp" />
+    <ClCompile Include="core\FileSearcher.cpp" />
+    <ClCompile Include="core\ContentSearcher.cpp" />
+    <ClCompile Include="core\DatSearcher.cpp" />
+    <!-- Dev-only: Serialize round-trip test harness (active only when _DEBUG is defined) -->
+    <ClCompile Include="dev\DatRoundTripTest.cpp" />
+    <!-- GGPK library (first-party, from POEFixer/smoother/ggpk/) -->
+    <ClCompile Include="lib\ggpk\GGPK.cpp" />
+    <ClCompile Include="lib\ggpk\Bundle.cpp" />
+    <ClCompile Include="lib\ggpk\Index.cpp" />
+    <ClCompile Include="lib\ggpk\Oodle.cpp" />
+    <ClCompile Include="..\..\POEFixer\imgui\imgui.cpp" />
+    <ClCompile Include="..\..\POEFixer\imgui\imgui_draw.cpp" />
+    <ClCompile Include="..\..\POEFixer\imgui\imgui_tables.cpp" />
+    <ClCompile Include="..\..\POEFixer\imgui\imgui_widgets.cpp" />
+    <!-- Third-party: stb -->
+    <ClCompile Include="lib\stb_impl.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <!-- Third-party: ImGuiColorTextEdit (santaclose fork) -->
+    <ClCompile Include="lib\TextEditor.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\LanguageDefinitions.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <!-- Third-party: DDSTextureLoader11 -->
+    <ClCompile Include="lib\DDSTextureLoader11.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <!-- Third-party: DirectXTex -->
+    <ClCompile Include="lib\DirectXTex\DirectXTexDDS.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\DirectXTex\DirectXTexImage.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\DirectXTex\DirectXTexUtil.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\DirectXTex\DirectXTexCompress.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\DirectXTex\BC.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\DirectXTex\BC4BC5.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\DirectXTex\BC6HBC7.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <!-- BCDirectCompute.cpp excluded: needs pre-compiled shader .inc files (GPU compute path not needed) -->
+    <ClCompile Include="lib\DirectXTex\DirectXTexMipmaps.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+    <ClCompile Include="lib\DirectXTex\DirectXTexConvert.cpp">
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
+      <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
+      <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="GGPKExplorer.h" />
+    <!-- UI panel headers -->
+    <ClInclude Include="ui\StatusBar.h" />
+    <ClInclude Include="ui\TreePanel.h" />
+    <ClInclude Include="ui\ContentPanel.h" />
+    <ClInclude Include="ui\SearchDialog.h" />
+    <ClInclude Include="ui\SearchResultsPanel.h" />
+    <ClInclude Include="ui\NavigationBar.h" />
+    <ClInclude Include="ui\KeyboardShortcuts.h" />
+    <ClInclude Include="ui\QuickJumpDialog.h" />
+    <ClInclude Include="ui\BookmarkManager.h" />
+    <ClInclude Include="ui\ExtractDialog.h" />
+    <ClInclude Include="ui\SaveAsExporter.h" />
+    <ClInclude Include="ui\SaveFormat.h" />
+    <ClInclude Include="ui\AttachBrowseModal.h" />
+    <!-- Viewer headers -->
+    <ClInclude Include="viewers\PropertiesViewer.h" />
+    <ClInclude Include="viewers\HexViewer.h" />
+    <ClInclude Include="viewers\TextViewer.h" />
+    <ClInclude Include="viewers\ImageViewer.h" />
+    <ClInclude Include="viewers\DatViewer.h" />
+    <ClInclude Include="viewers\CellEditorPanel.h" />
+    <ClInclude Include="viewers\editors\GgpkTreePicker.h" />
+    <ClInclude Include="viewers\editors\IconHelpers.h" />
+    <ClInclude Include="viewers\AudioViewer.h" />
+    <!-- New viewer headers (stubs) -->
+    <ClInclude Include="viewers\MeshViewer.h" />
+    <ClInclude Include="viewers\AocViewer.h" />
+    <ClInclude Include="viewers\aoc\AocSceneGraph.h" />
+    <ClInclude Include="viewers\aoc\AocLightSystem.h" />
+    <ClInclude Include="viewers\aoc\AocAudioSystem.h" />
+    <ClInclude Include="viewers\MeshShaders.h" />
+    <ClInclude Include="viewers\mesh\MeshCamera.h" />
+    <ClInclude Include="viewers\mesh\MeshMaterial.h" />
+    <ClInclude Include="viewers\mesh\MeshRenderer.h" />
+    <ClInclude Include="viewers\IViewer.h" />
+    <ClInclude Include="viewers\TerrainViewer.h" />
+    <ClInclude Include="viewers\MtpViewer.h" />
+    <ClInclude Include="viewers\PsgViewer.h" />
+    <ClInclude Include="viewers\PsgIconCache.h" />
+    <ClInclude Include="viewers\MatTableViewer.h" />
+    <ClInclude Include="viewers\animation\AnimationPlayer.h" />
+    <ClInclude Include="viewers\animation\AnimationDefaults.h" />
+    <ClInclude Include="viewers\animation\TimelineUi.h" />
+    <ClInclude Include="viewers\animation\AnimationSidePanel.h" />
+    <ClInclude Include="viewers\animation\AnimationTypes.h" />
+    <ClInclude Include="viewers\animation\MatrixMath.h" />
+    <ClInclude Include="viewers\animation\SkinningPalette.h" />
+    <ClInclude Include="viewers\animation\KeyframeDecoder.h" />
+    <ClInclude Include="viewers\animation\PoseComposer.h" />
+    <ClInclude Include="viewers\animation\PoseInterpolator.h" />
+    <ClInclude Include="viewers\animation\SkeletonBounds.h" />
+    <!-- Core: Infrastructure utility headers -->
+    <ClInclude Include="core\Result.h" />
+    <ClInclude Include="core\BinaryReader.h" />
+    <ClInclude Include="core\PathUtils.h" />
+    <ClInclude Include="core\TextEncoding.h" />
+    <ClInclude Include="core\AsyncTaskRunner.h" />
+    <ClInclude Include="core\GGPKExplorerSettings.h" />
+    <!-- Core headers -->
+    <ClInclude Include="core\FileTypeDetector.h" />
+    <ClInclude Include="core\GGPKManager.h" />
+    <ClInclude Include="core\VirtualTree.h" />
+    <ClInclude Include="core\DatParser.h" />
+    <ClInclude Include="core\DatSchema.h" />
+    <ClInclude Include="core\DatExport.h" />
+    <ClInclude Include="core\ImageExport.h" />
+    <ClInclude Include="core\DatImporter.h" />
+    <ClInclude Include="core\SearchTypes.h" />
+    <ClInclude Include="core\FileSearcher.h" />
+    <ClInclude Include="core\ContentSearcher.h" />
+    <ClInclude Include="core\DatSearcher.h" />
+    <!-- Dev-only: Serialize round-trip test harness header -->
+    <ClInclude Include="dev\DatRoundTripTest.h" />
+    <!-- Parser headers (header-only) -->
+    <ClInclude Include="core\parsers\TerrainGridParser.h" />
+    <ClInclude Include="core\parsers\MtpParser.h" />
+    <ClInclude Include="core\parsers\PsgParser.h" />
+    <ClInclude Include="core\parsers\CsdParser.h" />
+    <ClInclude Include="core\StatFormatter.h" />
+    <ClInclude Include="core\parsers\MatTableParser.h" />
+    <ClInclude Include="core\parsers\SmdParser.h" />
+    <ClInclude Include="core\parsers\SmdHeaderParser.h" />
+    <ClInclude Include="core\parsers\AstParser.h" />
+    <ClInclude Include="core\parsers\AstSkeletonBuilder.h" />
+    <ClInclude Include="core\parsers\AocTypes.h" />
+    <ClInclude Include="core\parsers\AocTokenizer.h" />
+    <ClInclude Include="core\parsers\AocParser.h" />
+    <ClInclude Include="core\parsers\AocResolver.h" />
+    <ClInclude Include="core\parsers\AocSkeletonAugmenter.h" />
+    <ClInclude Include="core\parsers\AocLightsParser.h" />
+    <ClInclude Include="core\parsers\AocSoundEventsParser.h" />
+    <ClInclude Include="core\parsers\AocJsonHelpers.h" />
+    <ClInclude Include="core\parsers\AocParticleEffectsParser.h" />
+    <ClInclude Include="core\parsers\OtParser.h" />
+    <ClInclude Include="viewers\aoc\AocTransitionState.h" />
+    <ClInclude Include="viewers\aoc\AocPersistedAttachments.h" />
+    <ClInclude Include="viewers\aoc\AocRecentAttachments.h" />
+    <ClInclude Include="viewers\aoc\AocUiHelpers.h" />
+    <ClInclude Include="viewers\aoc\ItemVisualIdentityCatalog.h" />
+    <ClInclude Include="viewers\aoc\ItemIconCache.h" />
+    <ClInclude Include="viewers\aoc\AocParticleSystem.h" />
+    <ClInclude Include="core\parsers\SmParser.h" />
+    <ClInclude Include="core\parsers\AmdParser.h" />
+    <!-- GGPK library headers -->
+    <ClInclude Include="lib\ggpk\GGPK.h" />
+    <ClInclude Include="lib\ggpk\Bundle.h" />
+    <ClInclude Include="lib\ggpk\Index.h" />
+    <ClInclude Include="lib\ggpk\Oodle.h" />
+    <ClInclude Include="lib\ggpk\BundledGGPK.h" />
+    <ClInclude Include="lib\ggpk\BundleRecord.h" />
+    <ClInclude Include="lib\ggpk\FileRecord.h" />
+    <ClInclude Include="lib\ggpk\TreeNode.h" />
+    <ClInclude Include="lib\ggpk\NameHash.h" />
+    <ClInclude Include="lib\ggpk\IBundleFactory.h" />
+    <ClInclude Include="lib\ggpk\GGPKBundleFactory.h" />
+    <ClInclude Include="lib\ggpk\DriveBundleFactory.h" />
+    <ClInclude Include="..\..\POEFixer\plugin_sdk\PluginAbi.h" />
+    <ClInclude Include="..\..\POEFixer\plugin_sdk\PluginSDK.h" />
+    <!-- Third-party: DDSTextureLoader11 -->
+    <ClInclude Include="lib\DDSTextureLoader11.h" />
+    <!-- Third-party: DirectXTex -->
+    <ClInclude Include="lib\DirectXTex\DirectXTex.h" />
+    <ClInclude Include="lib\DirectXTex\DirectXTex.inl" />
+    <ClInclude Include="lib\DirectXTex\DirectXTexP.h" />
+    <ClInclude Include="lib\DirectXTex\scoped.h" />
+    <ClInclude Include="lib\DirectXTex\DDS.h" />
+    <ClInclude Include="lib\DirectXTex\BC.h" />
+    <ClInclude Include="lib\DirectXTex\BCDirectCompute.h" />
+    <!-- Third-party: stb -->
+    <ClInclude Include="lib\stb_image.h" />
+    <ClInclude Include="lib\stb_image_write.h" />
+    <!-- Third-party: imgui_memory_editor -->
+    <ClInclude Include="lib\imgui_memory_editor.h" />
+    <!-- Third-party: ImGuiColorTextEdit -->
+    <ClInclude Include="lib\TextEditor.h" />
+    <!-- Third-party: nlohmann/json -->
+    <ClInclude Include="lib\json.hpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
