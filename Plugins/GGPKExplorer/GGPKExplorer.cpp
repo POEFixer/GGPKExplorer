@@ -1370,6 +1370,6 @@ extern "C" PLUGIN_API void DestroyPlugin(PluginSDK::Plugin* plugin) { delete plu
 POEFIXER_PLUGIN_INFO(
     "GGPKExplorer",
     "GGPK Explorer",
-    "1.0.0",
+    "1.0.1",
     "POEFixer",
     "Browses the game's content files: searchable file tree, viewers for tables, images, models and audio, and file extraction.")
