@@ -90,7 +90,7 @@ void TextViewer::Render() {
         m_monoFont = FindMonoFont();
         m_monoFontSearched = true;
     }
-    if (m_monoFont) ImGui::PushFont(m_monoFont);
+    if (m_monoFont) ImGui::PushFont(m_monoFont, m_monoFont->LegacySize);
     m_editor->Render("##TextViewer");
     if (m_monoFont) ImGui::PopFont();
 
@@ -166,9 +166,7 @@ void TextViewer::Render() {
 
                     if (startX < endX && lineY >= editorMin.y && lineY <= editorMax.y) {
                         auto* drawList = ImGui::GetForegroundDrawList();
-                        drawList->AddLine(
-                            ImVec2(startX, lineY), ImVec2(endX, lineY),
-                            IM_COL32(102, 204, 255, 230), 1.0f);
+                        drawList->AddLineH(startX, endX, lineY, IM_COL32(102, 204, 255, 230), 1.0f);
                     }
 
                     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);

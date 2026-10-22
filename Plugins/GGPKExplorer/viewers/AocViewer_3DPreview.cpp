@@ -98,7 +98,7 @@ void DrawViewTogglesPanel(AocViewerState& s) {
         ImGui::Checkbox("Show Grid",           &s.m_view.showGrid);
         const char* gridModes[] = { "Mesh Bounds", "Skeleton", "World Origin" };
         ImGui::Combo("Grid Anchor",            &s.m_view.gridAnchor,
-                     gridModes, IM_ARRAYSIZE(gridModes));
+                     gridModes, IM_COUNTOF(gridModes));
         ImGui::Checkbox("Show Parent Lines",   &s.m_view.showParentLines);
         ImGui::Separator();
         ImGui::Checkbox("Wireframe",           &s.m_view.wireframe);

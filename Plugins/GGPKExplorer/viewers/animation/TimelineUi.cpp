@@ -82,7 +82,7 @@ void RenderTimelineBar(AnimationPlayer& player, float height) {
         static char filter[64] = {};
         if (ImGui::BeginCombo("##animselfilt", currentName)) {
             ImGui::SetNextItemWidth(-FLT_MIN);
-            ImGui::InputText("##filter", filter, IM_ARRAYSIZE(filter),
+            ImGui::InputText("##filter", filter, IM_COUNTOF(filter),
                              ImGuiInputTextFlags_AutoSelectAll);
             ImGui::Separator();
             for (std::size_t i = 0; i < names.size(); ++i) {

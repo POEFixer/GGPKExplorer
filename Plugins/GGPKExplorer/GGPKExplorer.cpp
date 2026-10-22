@@ -1,4 +1,5 @@
 #include "GGPKExplorer.h"
+#include "../../POEFixer/imgui/imgui.h"
 #include "lib/json.hpp"
 #include "../../POEFixer/imgui/IconsFontAwesome6.h"
 #include <fstream>
@@ -721,7 +722,7 @@ void GGPKExplorer::RenderMainContent() {
         ImGui::SameLine(0.0f, 0.0f);
 
         // ------ Right panel: ContentPanel ------
-        ImGui::BeginChild("##RightPane", ImVec2(rightWidth, availHeight), ImGuiChildFlags_Border);
+        ImGui::BeginChild("##RightPane", ImVec2(rightWidth, availHeight), ImGuiChildFlags_Borders);
 
         if (m_Manager.IsOpen()) {
             m_ContentPanel.Render();
@@ -1364,3 +1365,11 @@ void GGPKExplorer::HandleContextMenuActions() {
 
 extern "C" PLUGIN_API PluginSDK::Plugin* CreatePlugin() { return new GGPKExplorer(); }
 extern "C" PLUGIN_API void DestroyPlugin(PluginSDK::Plugin* plugin) { delete plugin; }
+
+// Plugin info: the host checks it before CreatePlugin; the publish tool reads it.
+POEFIXER_PLUGIN_INFO(
+    "GGPKExplorer",
+    "GGPK Explorer",
+    "1.0.0",
+    "POEFixer",
+    "Browses the game's content files: searchable file tree, viewers for tables, images, models and audio, and file extraction.")

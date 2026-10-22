@@ -673,10 +673,7 @@ void DatViewer::Render()
         }
         const ImVec2 p0 = ImGui::GetItemRectMin();
         const ImVec2 p1 = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddLine(
-            ImVec2(p0.x + 2.0f, p0.y),
-            ImVec2(p0.x + 2.0f, p1.y),
-            IM_COL32(100, 100, 100, 255));
+        ImGui::GetWindowDrawList()->AddLineV(p0.x + 2.0f, p0.y, p1.y, IM_COL32(100, 100, 100, 255));
 
         ImGui::SameLine();
         m_editor.Render(m_editor.width);
@@ -1082,7 +1079,7 @@ void DatViewer::RenderTable()
                         ImGui::GetWindowDrawList()->AddRect(
                             cellRectMin, cellRectMax,
                             IM_COL32(120, 180, 255, 255),
-                            0.0f, 0, 2.0f);
+                            0.0f, 2.0f, ImDrawFlags_StrokeCenter);
                     }
                 }
             }

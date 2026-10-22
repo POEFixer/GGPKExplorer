@@ -141,12 +141,10 @@
     <!-- Core: Parsers (.cpp implementations) -->
     <ClCompile Include="core\parsers\TerrainGridParser.cpp" />
     <ClCompile Include="core\parsers\MatTableParser.cpp" />
-    <ClCompile Include="core\parsers\SmdHeaderParser.cpp" />
     <ClCompile Include="core\parsers\MtpParser.cpp" />
     <ClCompile Include="core\parsers\PsgParser.cpp" />
     <ClCompile Include="core\parsers\CsdParser.cpp" />
     <ClCompile Include="core\StatFormatter.cpp" />
-    <ClCompile Include="core\parsers\AmdParser.cpp" />
     <ClCompile Include="core\parsers\SmParser.cpp" />
     <ClCompile Include="core\parsers\AstParser.cpp" />
     <ClCompile Include="core\parsers\AstSkeletonBuilder.cpp" />
@@ -364,7 +362,6 @@
     <ClInclude Include="core\StatFormatter.h" />
     <ClInclude Include="core\parsers\MatTableParser.h" />
     <ClInclude Include="core\parsers\SmdParser.h" />
-    <ClInclude Include="core\parsers\SmdHeaderParser.h" />
     <ClInclude Include="core\parsers\AstParser.h" />
     <ClInclude Include="core\parsers\AstSkeletonBuilder.h" />
     <ClInclude Include="core\parsers\AocTypes.h" />
@@ -385,7 +382,6 @@
     <ClInclude Include="viewers\aoc\ItemIconCache.h" />
     <ClInclude Include="viewers\aoc\AocParticleSystem.h" />
     <ClInclude Include="core\parsers\SmParser.h" />
-    <ClInclude Include="core\parsers\AmdParser.h" />
     <!-- GGPK library headers -->
     <ClInclude Include="lib\ggpk\GGPK.h" />
     <ClInclude Include="lib\ggpk\Bundle.h" />

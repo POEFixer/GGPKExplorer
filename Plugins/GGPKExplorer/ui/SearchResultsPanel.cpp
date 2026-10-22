@@ -88,7 +88,7 @@ void SearchResultsPanel::Render() {
         // Right-align buttons
         float btnWidth = ImGui::CalcTextSize("\xef\x81\xb7").x + ImGui::GetStyle().FramePadding.x * 2.0f;
         float totalBtns = btnWidth * 4 + ImGui::GetStyle().ItemSpacing.x * 3;
-        float windowRight = ImGui::GetWindowContentRegionMax().x;
+        float windowRight = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
         ImGui::SameLine(windowRight - totalBtns);
 
         // Expand All
@@ -123,7 +123,7 @@ void SearchResultsPanel::Render() {
     float listH = m_height - headerH - 8.0f;
     if (listH < 30.0f) listH = 30.0f;
 
-    ImGui::BeginChild("##ResultsList", ImVec2(0, listH), ImGuiChildFlags_Border);
+    ImGui::BeginChild("##ResultsList", ImVec2(0, listH), ImGuiChildFlags_Borders);
 
     switch (m_mode) {
     case Mode::FileSearch:    RenderFileResults(); break;

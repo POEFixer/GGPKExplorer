@@ -27,7 +27,7 @@ struct SmData {
     uint32_t boneGroupCount = 0;
 };
 
-// Shared text utility functions (used by SmParser and AmdParser)
+// Shared text utility functions (used by SmParser)
 std::string Utf16LEToUtf8(const uint8_t* data, size_t size);
 std::string ExtractQuoted(const std::string& line);
 std::string TrimWS(const std::string& s);

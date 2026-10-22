@@ -155,7 +155,7 @@ void TreePanel::RevealSelected() {
 
 void TreePanel::Render(float width) {
     if (!m_tree) {
-        ImGui::BeginChild("##GGPKTree", ImVec2(width, 0), ImGuiChildFlags_Border);
+        ImGui::BeginChild("##GGPKTree", ImVec2(width, 0), ImGuiChildFlags_Borders);
         ImGui::TextDisabled("No data loaded");
         ImGui::EndChild();
         return;
@@ -164,7 +164,7 @@ void TreePanel::Render(float width) {
     const auto& flatList = m_tree->GetFlatList();
     int itemCount = static_cast<int>(flatList.size());
 
-    ImGui::BeginChild("##GGPKTree", ImVec2(width, 0), ImGuiChildFlags_Border);
+    ImGui::BeginChild("##GGPKTree", ImVec2(width, 0), ImGuiChildFlags_Borders);
 
     if (itemCount == 0) {
         ImGui::TextDisabled("Empty tree");

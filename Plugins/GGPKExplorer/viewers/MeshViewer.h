@@ -8,7 +8,6 @@
 #include <imgui.h>
 #include "IViewer.h"
 #include "../core/parsers/SmdParser.h"
-#include "../core/parsers/SmdHeaderParser.h"
 #include "../core/parsers/AstParser.h"
 #include "../core/parsers/AstSkeletonBuilder.h"
 #include "../core/parsers/SmParser.h"

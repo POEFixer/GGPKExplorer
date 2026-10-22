@@ -357,7 +357,7 @@ void PsgViewer::RenderVisual() {
                                     ImVec2(0, 0), ImVec2(1, 1),
                                     dimColor(IM_COL32_WHITE, alphaMul),
                                     radius,
-                                    ImDrawFlags_RoundCornersAll);
+                                    ImDrawFlags_RoundAll);
                 // Thin outline circle around the icon.
                 ImU32 outlineCol = IM_COL32(40, 40, 50, 220);
                 if (nodeIsRoot)                        outlineCol = IM_COL32(255, 200, 50, 255);
@@ -365,7 +365,7 @@ void PsgViewer::RenderVisual() {
                 else if (skill && skill->isNotable)    outlineCol = IM_COL32(80, 140, 255, 255);
                 else if (nodeIsJewel)                  outlineCol = IM_COL32(80, 220, 220, 255);
                 float outlineThick = (std::max)(1.0f, (std::min)(3.0f, radius * 0.08f));
-                dl->AddCircle(sp, radius, dimColor(outlineCol, alphaMul), 0, outlineThick);
+                dl->AddCircle(sp, radius, dimColor(outlineCol, alphaMul), 0, outlineThick, ImDrawFlags_StrokeCenter);
             } else {
                 // Fallback: colored circle/diamond based on type.
                 ImU32 fillColor = COL_REGULAR;
@@ -394,7 +394,7 @@ void PsgViewer::RenderVisual() {
             if (node.hash == m_selectedNodeHash && m_selectedNodeHash != 0) {
                 // Keep the selection ring fully visible so the current search
                 // match pan target stays prominent even when dimmed.
-                dl->AddCircle(sp, radius + 4.0f, COL_SELECTED_RING, 0, 2.0f);
+                dl->AddCircle(sp, radius + 4.0f, COL_SELECTED_RING, 0, 2.0f, ImDrawFlags_StrokeCenter);
             }
 
             // Hit test against the actual render radius so the tooltip
@@ -428,7 +428,7 @@ void PsgViewer::RenderVisual() {
             const PassiveSkillInfo* skill = GetSkillInfo(hovNode->hash);
             float hovBase = baseRadiusFor(*hovNode, hovJewel, skill);
             float hovRadius = scaleRadius(hovBase);
-            dl->AddCircle(hp, hovRadius + 3.0f, COL_HOVERED_RING, 0, 1.5f);
+            dl->AddCircle(hp, hovRadius + 3.0f, COL_HOVERED_RING, 0, 1.5f, ImDrawFlags_StrokeCenter);
         }
     }
 
