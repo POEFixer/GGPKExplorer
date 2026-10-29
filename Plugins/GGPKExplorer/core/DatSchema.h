@@ -24,6 +24,13 @@ public:
     const SchemaTable* FindTable(const std::string& datFileName) const;
     std::string GenerateSchemaText(const SchemaTable& table) const;
     const std::string& GetError() const { return m_error; }
+    // A load that could not finish (an exception, `what` its message or nullptr): not loaded,
+    // GetError() says so.
+    void FailUnexpected(const char* what) {
+        m_tables.clear();
+        m_loaded = false;
+        m_error = std::string("Unexpected error while reading the schema") + (what && *what ? std::string(": ") + what : "");
+    }
 
 private:
     std::unordered_map<std::string, SchemaTable> m_tables;

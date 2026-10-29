@@ -295,6 +295,10 @@
     <ClInclude Include="ui\SaveAsExporter.h" />
     <ClInclude Include="ui\SaveFormat.h" />
     <ClInclude Include="ui\AttachBrowseModal.h" />
+    <ClInclude Include="ui\UiText.h" />
+    <ClInclude Include="ui\UiTextCore.h" />
+    <ClInclude Include="ui\SchemaGate.h" />
+    <ClInclude Include="lang_en.generated.h" />
     <!-- Viewer headers -->
     <ClInclude Include="viewers\PropertiesViewer.h" />
     <ClInclude Include="viewers\HexViewer.h" />

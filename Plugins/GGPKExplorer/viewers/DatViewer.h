@@ -71,6 +71,8 @@ public:
     void Render() override;
     void RenderSchemaTab();
     bool HasChanges() const { return !m_modifiedCells.empty(); }
+    // Unsaved cell edits, an applied or a previewed import: reloading the table would lose them.
+    bool HasPendingEdits() const { return !m_modifiedCells.empty() || m_importMode || m_importConfirmOpen; }
 
     // Foreign key navigation: set by click, consumed by ContentPanel
     std::string pendingNavPath;

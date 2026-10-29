@@ -27,7 +27,6 @@ void SearchDialog::Open(const std::vector<std::string>& scopePaths, bool openFin
         strncpy(m_findFileFilterBuf, "*.*", sizeof(m_findFileFilterBuf) - 1);
     }
     m_isScopedSearch = false;
-    m_scopeLabel.clear();
 
     m_userResizedHeight = false;
     m_firstRender = true;
@@ -40,14 +39,7 @@ void SearchDialog::Open(int tab, const std::string& scopePath, bool isFileScope)
     m_activeTab = tab;
     m_showPreview = false;
     m_isScopedSearch = true;
-
-    // Build scope label for UI display
-    auto lastSlash = scopePath.rfind('/');
-    std::string displayName = (lastSlash != std::string::npos)
-        ? scopePath.substr(lastSlash + 1) : scopePath;
-    if (!isFileScope && !displayName.empty() && displayName.back() != '/')
-        displayName += "/";
-    m_scopeLabel = "Scope: " + displayName;
+    (void)isFileScope;   // the scope row shows the full path (m_scopePaths)
 
     // Reset result delivery flags
     m_ffResultDelivered = false;
@@ -252,7 +244,8 @@ void SearchDialog::Render() {
         m_lastRenderedHeight = m_measuredContentHeight;
     }
 
-    if (!ImGui::Begin("Search in Files###SearchDialog", &m_isOpen)) {
+    const std::string windowTitle = LabelId(I18n::Tr("search_title"), "SearchDialog");
+    if (!ImGui::Begin(windowTitle.c_str(), &m_isOpen)) {
         m_progressVisibleLastFrame = progressVisibleNow;
         ImGui::End();
         return;
@@ -265,11 +258,11 @@ void SearchDialog::Render() {
         // Reset after first frame
         if (m_activeTab >= 0) m_activeTab = -1;
 
-        if (ImGui::BeginTabItem("Find File", nullptr, findFileFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("search_tab_find_file"), nullptr, findFileFlags)) {
             RenderFindFileTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Find/Replace in Files", nullptr, findReplaceFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("search_tab_find_replace"), nullptr, findReplaceFlags)) {
             RenderFindReplaceTab();
             ImGui::EndTabItem();
         }
@@ -310,41 +303,65 @@ void SearchDialog::Render() {
 // RenderFindFileTab
 // ---------------------------------------------------------------------------
 
+// The width of the widest of `labels` plus one em: the column the input fields start at.
+static float LabelColumn(std::initializer_list<const char*> labels) {
+    float widest = 0.0f;
+    for (const char* label : labels) {
+        const float w = ImGui::CalcTextSize(label, nullptr, true).x;
+        if (w > widest) widest = w;
+    }
+    return widest + ImGui::GetFontSize();
+}
+
+// The read-only scope line: the selected paths, or the whole tree.
+static std::string ScopeText(const std::vector<std::string>& scopePaths) {
+    std::string scopeStr;
+    for (size_t i = 0; i < scopePaths.size(); ++i) {
+        if (i > 0) scopeStr += ", ";
+        scopeStr += scopePaths[i];
+    }
+    if (scopeStr.empty()) scopeStr = I18n::Tr("search_scope_entire_tree");
+    return scopeStr;
+}
+
+// The "Extended" search mode label: its escape list is code, never translated.
+static std::string ExtendedModeLabel(const char* id) {
+    return LabelId((std::string(I18n::Tr("search_mode_extended")) + " (\\n, \\r, \\t, \\0, \\x...)").c_str(), id);
+}
+
 void SearchDialog::RenderFindFileTab() {
-    float labelW = 100.0f;
+    const char* findWhat = I18n::Tr("search_find_what");
+    const char* filters = I18n::Tr("search_filters");
+    const char* scope = I18n::Tr("search_scope");
+    const std::string findAll = LabelId(I18n::Tr("search_find_all"), "ff_find_all");
+    float labelW = LabelColumn({ findWhat, filters, scope });
     float availW = ImGui::GetContentRegionAvail().x;
-    float btnW = 80.0f;
+    float btnW = ButtonWidth(findAll.c_str(), 6.0f);
     float inputW = availW - labelW - btnW - 16.0f;
     if (inputW < 100.0f) inputW = 100.0f;
 
     // Find what
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("Find what:");
+    ImGui::TextUnformatted(findWhat);
     ImGui::SameLine(labelW);
     bool enterPressed = RenderHistoryInput("##FFQuery", m_findFileBuf, sizeof(m_findFileBuf),
                                             m_searchHistory, inputW);
     ImGui::SameLine();
-    if (ImGui::Button("Find All##FF", ImVec2(btnW, 0)) || enterPressed)
+    if (ImGui::Button(findAll.c_str(), ImVec2(btnW, 0)) || enterPressed)
         DoFindFiles();
 
     // Filters
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("Filters:");
+    ImGui::TextUnformatted(filters);
     ImGui::SameLine(labelW);
     ImGui::SetNextItemWidth(inputW);
     ImGui::InputText("##FFFilter", m_findFileFilterBuf, sizeof(m_findFileFilterBuf));
 
     // Scope (read-only)
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("Scope:");
+    ImGui::TextUnformatted(scope);
     ImGui::SameLine(labelW);
-    std::string scopeStr;
-    for (size_t i = 0; i < m_scopePaths.size(); ++i) {
-        if (i > 0) scopeStr += ", ";
-        scopeStr += m_scopePaths[i];
-    }
-    if (scopeStr.empty()) scopeStr = "(entire tree)";
-    ImGui::TextColored(ImVec4(0.53f, 0.67f, 1.0f, 1.0f), "%s", scopeStr.c_str());
+    ImGui::TextColored(ImVec4(0.53f, 0.67f, 1.0f, 1.0f), "%s", ScopeText(m_scopePaths).c_str());
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -353,27 +370,27 @@ void SearchDialog::RenderFindFileTab() {
     // Checkboxes in two columns
     ImGui::Columns(2, nullptr, false);
 
-    ImGui::Checkbox("Search file names", &m_searchFileNames);
-    ImGui::Checkbox("Search folder names", &m_searchFolderNames);
-    ImGui::Checkbox("Search by path", &m_searchByPath);
-    ImGui::Checkbox("Match whole word only##FF", &m_ffMatchWholeWord);
-    ImGui::Checkbox("Match case##FF", &m_ffMatchCase);
+    ImGui::Checkbox(I18n::TrId("search_file_names"), &m_searchFileNames);
+    ImGui::Checkbox(I18n::TrId("search_folder_names"), &m_searchFolderNames);
+    ImGui::Checkbox(I18n::TrId("search_by_path"), &m_searchByPath);
+    ImGui::Checkbox(LabelId(I18n::Tr("search_match_whole_word"), "ff_match_whole_word").c_str(), &m_ffMatchWholeWord);
+    ImGui::Checkbox(LabelId(I18n::Tr("search_match_case"), "ff_match_case").c_str(), &m_ffMatchCase);
     {
         bool allFiles = AreAllScopePathsFiles();
         ImGui::BeginDisabled(allFiles);
-        ImGui::Checkbox("In all sub-folders##FF", &m_ffInSubFolders);
+        ImGui::Checkbox(LabelId(I18n::Tr("search_in_subfolders"), "ff_in_subfolders").c_str(), &m_ffInSubFolders);
         bool hovered = ImGui::IsItemHovered();
         ImGui::EndDisabled();
         if (allFiles && hovered)
-            ImGui::SetTooltip("Not applicable - scope contains files only");
+            ImGui::SetTooltip("%s", I18n::Tr("search_subfolders_not_applicable"));
     }
 
     ImGui::NextColumn();
 
-    ImGui::Text("Search Mode");
-    ImGui::RadioButton("Normal##FF", &m_ffSearchMode, 0);
-    ImGui::RadioButton("Extended (\\n, \\r, \\t, \\0, \\x...)##FF", &m_ffSearchMode, 1);
-    ImGui::RadioButton("Regular expression##FF", &m_ffSearchMode, 2);
+    ImGui::TextUnformatted(I18n::Tr("search_mode"));
+    ImGui::RadioButton(LabelId(I18n::Tr("search_mode_normal"), "ff_mode_normal").c_str(), &m_ffSearchMode, 0);
+    ImGui::RadioButton(ExtendedModeLabel("ff_mode_extended").c_str(), &m_ffSearchMode, 1);
+    ImGui::RadioButton(LabelId(I18n::Tr("search_mode_regex"), "ff_mode_regex").c_str(), &m_ffSearchMode, 2);
 
     ImGui::Columns(1);
 
@@ -381,7 +398,7 @@ void SearchDialog::RenderFindFileTab() {
     ImGui::Spacing();
     if (m_fileSearcher && m_fileSearcher->IsRunning()) {
         float progress = m_fileSearcher->GetProgress();
-        ImGui::ProgressBar(progress, ImVec2(-1, 0), "Searching...");
+        ImGui::ProgressBar(progress, ImVec2(-1, 0), I18n::Tr("search_searching"));
     } else if (m_fileSearcher && !m_ffResultDelivered) {
         // Search finished — deliver result exactly once
         auto result = m_fileSearcher->GetResult();
@@ -399,9 +416,18 @@ void SearchDialog::RenderFindFileTab() {
 // ---------------------------------------------------------------------------
 
 void SearchDialog::RenderFindReplaceTab() {
-    float labelW = 110.0f;
+    const char* findWhat = I18n::Tr("search_find_what");
+    const char* replaceWith = I18n::Tr("search_replace_with");
+    const char* filters = I18n::Tr("search_filters");
+    const char* scope = I18n::Tr("search_scope");
+    const std::string findAll = LabelId(I18n::Tr("search_find_all"), "fr_find_all");
+    const char* findNext = I18n::TrId("search_find_next");
+    const char* replaceInFiles = I18n::TrId("search_replace_in_files");
+    float labelW = LabelColumn({ findWhat, replaceWith, filters, scope });
     float availW = ImGui::GetContentRegionAvail().x;
-    float btnW = 140.0f;
+    float btnW = ButtonWidth(findAll.c_str(), 10.0f);
+    if (ButtonWidth(findNext, 10.0f) > btnW) btnW = ButtonWidth(findNext, 10.0f);
+    if (ButtonWidth(replaceInFiles, 10.0f) > btnW) btnW = ButtonWidth(replaceInFiles, 10.0f);
     float inputW = availW - labelW - btnW - 16.0f;
     if (inputW < 100.0f) inputW = 100.0f;
 
@@ -409,36 +435,37 @@ void SearchDialog::RenderFindReplaceTab() {
 
     // Find what
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("Find what:");
+    ImGui::TextUnformatted(findWhat);
     ImGui::SameLine(labelW);
     bool enterPressed = RenderHistoryInput("##FRQuery", m_findContentBuf, sizeof(m_findContentBuf),
                                             m_searchHistory, inputW);
     ImGui::SameLine();
-    if (ImGui::Button("Find All##FR", ImVec2(btnW, 0)) || enterPressed)
+    if (ImGui::Button(findAll.c_str(), ImVec2(btnW, 0)) || enterPressed)
         DoFindInFiles();
 
     // Replace with (directly under Find what)
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("Replace with:");
+    ImGui::TextUnformatted(replaceWith);
     ImGui::SameLine(labelW);
     RenderHistoryInput("##FRReplace", m_replaceBuf, sizeof(m_replaceBuf),
                         m_replaceHistory, inputW);
     ImGui::SameLine();
-    if (ImGui::Button("Find Next", ImVec2(btnW, 0)) && m_findContentBuf[0] != '\0') {
+    if (ImGui::Button(findNext, ImVec2(btnW, 0)) && m_findContentBuf[0] != '\0') {
         DoFindNext();
     }
 
     // Filters (with Replace in Files button on the right)
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("Filters:");
+    ImGui::TextUnformatted(filters);
     ImGui::SameLine(labelW);
     ImGui::SetNextItemWidth(inputW);
     if (m_filterPresetIndex < PRESET_COUNT - 1) {
         // Show preset name in combo
-        if (ImGui::BeginCombo("##FRFilter", FILTER_PRESETS[m_filterPresetIndex].name)) {
+        if (ImGui::BeginCombo("##FRFilter", I18n::Tr(FILTER_PRESETS[m_filterPresetIndex].nameKey))) {
             for (int i = 0; i < PRESET_COUNT; ++i) {
                 bool isSelected = (i == m_filterPresetIndex);
-                if (ImGui::Selectable(FILTER_PRESETS[i].name, isSelected)) {
+                if (ImGui::Selectable(LabelId(I18n::Tr(FILTER_PRESETS[i].nameKey), FILTER_PRESETS[i].nameKey).c_str(),
+                                      isSelected)) {
                     m_filterPresetIndex = i;
                     if (i == PRESET_COUNT - 1) {
                         // Custom — copy current preset value into custom buffer
@@ -456,25 +483,19 @@ void SearchDialog::RenderFindReplaceTab() {
         // Custom mode — editable text field
         ImGui::InputText("##FRCustomFilter", m_customFilterBuf, sizeof(m_customFilterBuf));
         ImGui::SameLine();
-        if (ImGui::SmallButton("Presets")) {
+        if (ImGui::SmallButton(I18n::TrId("search_presets"))) {
             m_filterPresetIndex = 1; // back to default
         }
     }
     ImGui::SameLine(btnX);
-    if (ImGui::Button("Replace in Files", ImVec2(btnW, 0)))
+    if (ImGui::Button(replaceInFiles, ImVec2(btnW, 0)))
         DoReplaceInFiles();
 
     // Scope
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("Scope:");
+    ImGui::TextUnformatted(scope);
     ImGui::SameLine(labelW);
-    std::string scopeStr;
-    for (size_t i = 0; i < m_scopePaths.size(); ++i) {
-        if (i > 0) scopeStr += ", ";
-        scopeStr += m_scopePaths[i];
-    }
-    if (scopeStr.empty()) scopeStr = "(entire tree)";
-    ImGui::TextColored(ImVec4(0.53f, 0.67f, 1.0f, 1.0f), "%s", scopeStr.c_str());
+    ImGui::TextColored(ImVec4(0.53f, 0.67f, 1.0f, 1.0f), "%s", ScopeText(m_scopePaths).c_str());
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -483,41 +504,46 @@ void SearchDialog::RenderFindReplaceTab() {
     // Checkboxes
     ImGui::Columns(2, nullptr, false);
 
-    ImGui::Checkbox("Match whole word only##FR", &m_frMatchWholeWord);
-    ImGui::Checkbox("Match case##FR", &m_frMatchCase);
+    ImGui::Checkbox(LabelId(I18n::Tr("search_match_whole_word"), "fr_match_whole_word").c_str(), &m_frMatchWholeWord);
+    ImGui::Checkbox(LabelId(I18n::Tr("search_match_case"), "fr_match_case").c_str(), &m_frMatchCase);
     {
         bool allFiles = AreAllScopePathsFiles();
         ImGui::BeginDisabled(allFiles);
-        ImGui::Checkbox("In all sub-folders##FR", &m_frInSubFolders);
+        ImGui::Checkbox(LabelId(I18n::Tr("search_in_subfolders"), "fr_in_subfolders").c_str(), &m_frInSubFolders);
         bool hovered = ImGui::IsItemHovered();
         ImGui::EndDisabled();
         if (allFiles && hovered)
-            ImGui::SetTooltip("Not applicable - scope contains files only");
+            ImGui::SetTooltip("%s", I18n::Tr("search_subfolders_not_applicable"));
     }
 
     ImGui::NextColumn();
 
-    ImGui::Text("Search Mode");
-    ImGui::RadioButton("Normal##FR", &m_frSearchMode, 0);
-    ImGui::RadioButton("Extended (\\n, \\r, \\t, \\0, \\x...)##FR", &m_frSearchMode, 1);
-    ImGui::RadioButton("Regular expression##FR", &m_frSearchMode, 2);
+    ImGui::TextUnformatted(I18n::Tr("search_mode"));
+    ImGui::RadioButton(LabelId(I18n::Tr("search_mode_normal"), "fr_mode_normal").c_str(), &m_frSearchMode, 0);
+    ImGui::RadioButton(ExtendedModeLabel("fr_mode_extended").c_str(), &m_frSearchMode, 1);
+    ImGui::RadioButton(LabelId(I18n::Tr("search_mode_regex"), "fr_mode_regex").c_str(), &m_frSearchMode, 2);
     if (m_frSearchMode == 2) {
         ImGui::SameLine();
-        ImGui::Checkbox(". matches newline", &m_frDotMatchesNewline);
+        ImGui::Checkbox(I18n::TrId("search_dot_matches_newline"), &m_frDotMatchesNewline);
     }
 
     ImGui::Columns(1);
 
     // Info bar
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.4f, 0.8f),
-        "\xef\x81\x9a .datc64 files: search in decoded string values. Replace only in String columns.");
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.4f, 0.8f), "%s",
+        (std::string("\xef\x81\x9a ") + I18n::Tr("search_datc64_info")).c_str());
+    if (!m_schema || !m_schema->IsLoaded()) {
+        // .datc64 values decode through the DAT schema (game data the host may still be downloading).
+        ImGui::SameLine(0.0f, ImGui::GetFontSize());
+        SchemaNotReadyLine(m_schema ? m_schema->GetError() : std::string());
+    }
 
     // Progress and result delivery
     ImGui::Spacing();
     if (m_contentSearcher && m_contentSearcher->IsRunning()) {
         float progress = m_contentSearcher->GetProgress();
-        ImGui::ProgressBar(progress, ImVec2(-1, 0), "Searching...");
+        ImGui::ProgressBar(progress, ImVec2(-1, 0), I18n::Tr("search_searching"));
     } else if (m_contentSearcher && !m_frResultDelivered) {
         // Search finished — deliver result exactly once
         auto result = m_contentSearcher->GetResult();
@@ -534,7 +560,8 @@ void SearchDialog::RenderFindReplaceTab() {
 
 void SearchDialog::RenderReplacePreview() {
     ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Replace Preview###ReplacePreview", &m_showPreview)) {
+    const std::string windowTitle = LabelId(I18n::Tr("preview_title"), "ReplacePreview");
+    if (!ImGui::Begin(windowTitle.c_str(), &m_showPreview)) {
         ImGui::End();
         return;
     }
@@ -543,8 +570,9 @@ void SearchDialog::RenderReplacePreview() {
     for (const auto& p : m_previewData)
         totalEntries += static_cast<int>(p.entries.size());
 
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.4f, 1.0f),
-        "Preview: %d replacement(s) in %d file(s)", totalEntries, static_cast<int>(m_previewData.size()));
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.4f, 1.0f), "%s",
+        I18n::TrF("preview_summary", { { "replacements", Num("%d", totalEntries) },
+                                       { "files", Num("%d", static_cast<int>(m_previewData.size())) } }).c_str());
     ImGui::Separator();
 
     // Scrollable area
@@ -558,10 +586,10 @@ void SearchDialog::RenderReplacePreview() {
         // Table for entries
         if (ImGui::BeginTable("##PreviewEntries", 4,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Row", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-            ImGui::TableSetupColumn("Column", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-            ImGui::TableSetupColumn("Before", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("After", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn(I18n::TrId("preview_col_row"), ImGuiTableColumnFlags_WidthFixed, 0.0f);
+            ImGui::TableSetupColumn(I18n::TrId("preview_col_column"), ImGuiTableColumnFlags_WidthFixed, 0.0f);
+            ImGui::TableSetupColumn(I18n::TrId("preview_col_before"), ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn(I18n::TrId("preview_col_after"), ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableHeadersRow();
 
             for (const auto& e : preview.entries) {
@@ -584,20 +612,22 @@ void SearchDialog::RenderReplacePreview() {
     ImGui::EndChild();
 
     // Buttons
-    float btnWidth = 150.0f;
+    const char* cancelLabel = I18n::TrId("common_cancel");
+    const std::string applyLabel = LabelId(
+        I18n::TrF("preview_apply", { { "count", Num("%d", totalEntries) } }).c_str(), "preview_apply");
+    float btnWidth = ButtonWidth(cancelLabel, 11.5f);
+    if (ButtonWidth(applyLabel.c_str(), 11.5f) > btnWidth) btnWidth = ButtonWidth(applyLabel.c_str(), 11.5f);
     float spacing = 8.0f;
     float totalBtnW = btnWidth * 2 + spacing;
     ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - totalBtnW + ImGui::GetCursorPosX());
 
-    if (ImGui::Button("Cancel", ImVec2(btnWidth, 0))) {
+    if (ImGui::Button(cancelLabel, ImVec2(btnWidth, 0))) {
         m_showPreview = false;
         m_previewData.clear();
     }
     ImGui::SameLine(0, spacing);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.5f, 0.1f, 1.0f));
-    char applyLabel[64];
-    snprintf(applyLabel, sizeof(applyLabel), "Apply %d replacement(s)", totalEntries);
-    if (ImGui::Button(applyLabel, ImVec2(btnWidth, 0))) {
+    if (ImGui::Button(applyLabel.c_str(), ImVec2(btnWidth, 0))) {
         DoApplyPreview();
     }
     ImGui::PopStyleColor();

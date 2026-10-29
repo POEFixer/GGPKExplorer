@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UiText.h"   // LocText
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -36,7 +38,8 @@ public:
 
     void SetManager(GGPKManager* mgr) { m_mgr = mgr; }
     void SetTree(VirtualTree* tree)   { m_tree = tree; }
-    void SetSchema(DatSchema* schema)              { m_schema = schema; }
+    // A new schema (game data updated) rebuilds the item catalog on the next DAT-tab visit.
+    void SetSchema(DatSchema* schema);
     void SetParentAocPath(const std::string& p)    { m_parentAocPath = p; }
     void SetDevice(ID3D11Device* device)           { m_device = device; }
 
@@ -98,7 +101,7 @@ private:
     std::vector<std::size_t> m_filteredIndices;
 
     int                 m_selectedIndex = -1;  // Index into m_filteredIndices, -1 = none.
-    std::string         m_lastError;           // Inline error shown in modal on ReadFile failure.
+    LocText             m_lastError;           // Inline error shown in modal on ReadFile failure.
 
     // --- DAT tab ("By Item Name") state ------------------------------------
     DatSchema*                                              m_schema = nullptr;
@@ -107,8 +110,8 @@ private:
     const GGPKManager*                                      m_cachedMgrPtrForDat = nullptr;
 
     DatLoadState                                            m_datLoadState = DatLoadState::Idle;
-    std::string                                             m_datLoadError;
-    std::string                                             m_datLastError;
+    std::string                                             m_datLoadError;   // the catalog's (English) reason
+    LocText                                                 m_datLastError;
 
     char                                                    m_datFilterBuf[256] = {};
     std::vector<std::size_t>                                m_datFilteredIndices;

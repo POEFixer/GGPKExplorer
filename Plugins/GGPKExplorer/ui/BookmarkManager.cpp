@@ -1,4 +1,5 @@
 #include "BookmarkManager.h"
+#include "UiText.h"
 #include <algorithm>
 #include <cctype>
 
@@ -10,14 +11,14 @@ std::string BookmarkManager::Render(VirtualTree& tree) {
     if (!m_showBookmarkManager) return navTarget;
 
     ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Bookmark Manager", &m_showBookmarkManager)) {
+    if (!ImGui::Begin(I18n::TrId("bookmarks_title"), &m_showBookmarkManager)) {
         ImGui::End();
         return navTarget;
     }
 
     // Filter input
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##bmFilter", "Filter by path...", m_bookmarkFilter, sizeof(m_bookmarkFilter));
+    ImGui::InputTextWithHint("##bmFilter", I18n::Tr("common_filter_by_path"), m_bookmarkFilter, sizeof(m_bookmarkFilter));
 
     ImGui::Spacing();
 
@@ -40,12 +41,16 @@ std::string BookmarkManager::Render(VirtualTree& tree) {
         filtered.push_back({ i });
     }
 
+    const char* goLabel = I18n::TrId("bookmarks_go");
+    const char* removeLabel = I18n::TrId("bookmarks_remove");
+
     if (ImGui::BeginTable("##bmTable", 3,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable,
             ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 4))) {
-        ImGui::TableSetupColumn("Icon", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, 40.0f, 0);
-        ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch, 0.0f, 1);
-        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, 130.0f, 2);
+        // Fixed columns fit their translated header and cells (width 0: the table is not resizable).
+        ImGui::TableSetupColumn(I18n::TrId("bookmarks_col_icon"), ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, 0.0f, 0);
+        ImGui::TableSetupColumn(I18n::TrId("bookmarks_col_path"), ImGuiTableColumnFlags_WidthStretch, 0.0f, 1);
+        ImGui::TableSetupColumn(I18n::TrId("bookmarks_col_actions"), ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, 0.0f, 2);
         ImGui::TableHeadersRow();
 
         // Apply sorting
@@ -100,18 +105,20 @@ std::string BookmarkManager::Render(VirtualTree& tree) {
             ImGui::TableNextColumn();
             {
                 float colW = ImGui::GetColumnWidth();
-                float btnW = ImGui::CalcTextSize("Go").x + ImGui::CalcTextSize("Remove").x +
+                float btnW = ImGui::CalcTextSize(goLabel, nullptr, true).x +
+                             ImGui::CalcTextSize(removeLabel, nullptr, true).x +
                              ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
                 float rowH = ImGui::GetTextLineHeightWithSpacing();
                 float btnH = ImGui::GetFrameHeight();
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (colW - btnW) * 0.5f);
+                if (colW > btnW)
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (colW - btnW) * 0.5f);
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (rowH - btnH) * 0.5f);
-                if (ImGui::SmallButton("Go")) {
+                if (ImGui::SmallButton(goLabel)) {
                     navTarget = bm.path;
                     m_showBookmarkManager = false;
                 }
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
+                if (ImGui::SmallButton(removeLabel)) {
                     pathToRemove = bm.path;
                 }
             }
@@ -131,7 +138,7 @@ std::string BookmarkManager::Render(VirtualTree& tree) {
     if (bookmarks.empty()) {
         ImGui::BeginDisabled();
     }
-    if (ImGui::Button("Clear All")) {
+    if (ImGui::Button(I18n::TrId("bookmarks_clear_all"))) {
         m_bookmarkClearConfirm = true;
     }
     if (bookmarks.empty()) {
@@ -139,21 +146,26 @@ std::string BookmarkManager::Render(VirtualTree& tree) {
     }
 
     ImGui::SameLine();
-    ImGui::TextDisabled("%d bookmark(s)", static_cast<int>(bookmarks.size()));
+    ImGui::TextDisabled("%s", I18n::TrF("bookmarks_count", { { "count", Num("%d", static_cast<int>(bookmarks.size())) } }).c_str());
 
     if (m_bookmarkClearConfirm) {
         ImGui::OpenPopup("##ClearAllBookmarks");
         m_bookmarkClearConfirm = false;
     }
     if (ImGui::BeginPopupModal("##ClearAllBookmarks", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Remove all %d bookmarks?", static_cast<int>(bookmarks.size()));
+        ImGui::TextUnformatted(I18n::TrF("bookmarks_clear_confirm",
+            { { "count", Num("%d", static_cast<int>(bookmarks.size())) } }).c_str());
         ImGui::Spacing();
-        if (ImGui::Button("Yes", ImVec2(80, 0))) {
+        const char* yesLabel = I18n::TrId("common_yes");
+        const char* cancelLabel = I18n::TrId("common_cancel");
+        float confirmW = ButtonWidth(yesLabel, 6.0f);
+        if (ButtonWidth(cancelLabel, 6.0f) > confirmW) confirmW = ButtonWidth(cancelLabel, 6.0f);
+        if (ImGui::Button(yesLabel, ImVec2(confirmW, 0))) {
             tree.SetBookmarks({});
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        if (ImGui::Button(cancelLabel, ImVec2(confirmW, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

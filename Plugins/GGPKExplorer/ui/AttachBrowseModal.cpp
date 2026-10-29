@@ -1,5 +1,6 @@
 #include "AttachBrowseModal.h"
 
+#include "../core/DatSchema.h"
 #include "../core/GGPKManager.h"
 #include "../core/VirtualTree.h"
 #include "../core/FileTypeDetector.h"
@@ -43,6 +44,17 @@ std::string ToLowerAscii(const std::string& s) {
 AttachBrowseModal::AttachBrowseModal()  = default;
 AttachBrowseModal::~AttachBrowseModal() = default;
 
+void AttachBrowseModal::SetSchema(DatSchema* schema) {
+    if (schema == m_schema) return;
+    m_schema = schema;
+    // The catalog was read with the previous schema: read it again on the next DAT-tab visit.
+    if (m_catalog) m_catalog->Reset();
+    m_datLoadState       = DatLoadState::Idle;
+    m_datFilteredIndices.clear();
+    m_datSelectedIndex   = -1;
+    m_datSelectedFileIdx = -1;
+}
+
 void AttachBrowseModal::Open(const std::string& socketName, AttachCallback onAttach) {
     m_showModal     = true;
     m_needsFocus    = true;
@@ -52,13 +64,13 @@ void AttachBrowseModal::Open(const std::string& socketName, AttachCallback onAtt
     m_showSm        = true;
     m_showAoc       = true;
     m_selectedIndex = -1;
-    m_lastError.clear();
+    m_lastError = {};
 
     // Reset DAT tab transient state so reopen starts fresh.
     m_datFilterBuf[0]    = '\0';
     m_datSelectedIndex   = -1;
     m_datSelectedFileIdx = -1;
-    m_datLastError.clear();
+    m_datLastError = {};
     m_datNeedsFocus      = true;
     // Re-seed filter if catalog is loaded (no-op otherwise; EnsureDatCatalog
     // will seed on first tab activation).
@@ -75,7 +87,7 @@ void AttachBrowseModal::Open(const std::string& socketName, AttachCallback onAtt
 void AttachBrowseModal::Close() {
     m_showModal = false;
     m_onAttach  = nullptr;
-    m_lastError.clear();
+    m_lastError = {};
 }
 
 void AttachBrowseModal::RebuildFileCache() {
@@ -126,25 +138,25 @@ void AttachBrowseModal::ApplyFilter() {
 }
 
 void AttachBrowseModal::TriggerAttach() {
-    m_lastError.clear();
+    m_lastError = {};
     if (m_selectedIndex < 0 ||
         m_selectedIndex >= static_cast<int>(m_filteredIndices.size())) {
-        m_lastError = "No selection";
+        m_lastError = { I18n::Key("attach_error_no_selection"), {} };
         return;
     }
     if (!m_mgr) {
-        m_lastError = "GGPK not loaded";
+        m_lastError = { I18n::Key("attach_not_loaded"), {} };
         return;
     }
     const std::string& path = m_allMeshPaths[m_filteredIndices[static_cast<std::size_t>(m_selectedIndex)]];
     void* node = m_mgr->FindNodeByPath(path);
     if (!node) {
-        m_lastError = "File not found: " + path;
+        m_lastError = { I18n::Key("attach_error_file_not_found"), { { "path", path } } };
         return;
     }
     auto res = m_mgr->ReadFile(node);
     if (!res.success) {
-        m_lastError = "Read failed: " + res.error;
+        m_lastError = { I18n::Key("attach_error_read_failed"), { { "error", res.error } } };
         return;
     }
     if (m_onAttach) {
@@ -158,7 +170,7 @@ void AttachBrowseModal::RenderFilesTab() {
         ImGui::SetKeyboardFocusHere();
         m_needsFocus = false;
     }
-    if (ImGui::InputTextWithHint("##AocBrowseFilter", "Filter by path...",
+    if (ImGui::InputTextWithHint("##AocBrowseFilter", I18n::Tr("common_filter_by_path"),
                                  m_filterBuf, sizeof(m_filterBuf))) {
         ApplyFilter();
     }
@@ -167,14 +179,15 @@ void AttachBrowseModal::RenderFilesTab() {
     ImGui::SameLine();
     if (ImGui::Checkbox(".aoc", &m_showAoc)) ApplyFilter();
 
-    ImGui::Text("Results: %zu / %zu", m_filteredIndices.size(), m_allMeshPaths.size());
+    ImGui::TextUnformatted(I18n::TrF("attach_results", { { "shown", Num("%zu", m_filteredIndices.size()) },
+                                                         { "total", Num("%zu", m_allMeshPaths.size()) } }).c_str());
 
     const float listHeight = ImGui::GetContentRegionAvail().y - 100.0f;
     ImGui::BeginChild("##AocBrowseList",
                       ImVec2(0.0f, listHeight > 100.0f ? listHeight : 100.0f), true);
     if (m_filteredIndices.empty()) {
         ImGui::TextDisabled("%s",
-            m_allMeshPaths.empty() ? "No .sm / .aoc files in GGPK" : "No matches");
+            m_allMeshPaths.empty() ? I18n::Tr("attach_no_mesh_files") : I18n::Tr("attach_no_matches"));
     } else {
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(m_filteredIndices.size()));
@@ -201,25 +214,28 @@ void AttachBrowseModal::RenderFilesTab() {
 
     if (m_selectedIndex >= 0 &&
         m_selectedIndex < static_cast<int>(m_filteredIndices.size())) {
-        ImGui::TextWrapped("Selected: %s",
-            m_allMeshPaths[m_filteredIndices[static_cast<std::size_t>(m_selectedIndex)]].c_str());
+        ImGui::TextWrapped("%s", I18n::TrF("attach_selected", { { "path",
+            m_allMeshPaths[m_filteredIndices[static_cast<std::size_t>(m_selectedIndex)]] } }).c_str());
     } else {
-        ImGui::TextDisabled("(no selection)");
+        ImGui::TextDisabled("%s", I18n::Tr("common_no_selection"));
     }
 
-    if (!m_lastError.empty()) {
-        ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f), "Error: %s", m_lastError.c_str());
+    if (!m_lastError.Empty()) {
+        ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f), "%s",
+                           I18n::TrF("error_detail", { { "detail", TextOf(m_lastError) } }).c_str());
     }
 
     ImGui::Separator();
     const bool canAttach = (m_selectedIndex >= 0 && m_mgr != nullptr);
+    const char* attachLabel = I18n::TrId("attach_attach");
+    const char* cancelLabel = I18n::TrId("common_cancel");
     if (!canAttach) ImGui::BeginDisabled();
-    if (ImGui::Button("Attach", ImVec2(100.0f, 0.0f))) {
+    if (ImGui::Button(attachLabel, ImVec2(ButtonWidth(attachLabel, 7.5f), 0.0f))) {
         TriggerAttach();
     }
     if (!canAttach) ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) {
+    if (ImGui::Button(cancelLabel, ImVec2(ButtonWidth(cancelLabel, 7.5f), 0.0f))) {
         Close();
     }
 
@@ -268,19 +284,20 @@ void AttachBrowseModal::EnsureDatCatalog() {
 
 void AttachBrowseModal::RenderDatTab() {
     // Preconditions — disable tab body with a message when we can't proceed.
-    if (!m_schema) {
-        ImGui::TextDisabled("DAT schema not available.");
+    if (!m_schema || !m_schema->IsLoaded()) {
+        // The item catalog needs the DAT schema (game data the host may still be downloading).
+        SchemaNotReadyLine(m_schema ? m_schema->GetError() : std::string());
         return;
     }
     if (!m_mgr) {
-        ImGui::TextDisabled("GGPK not loaded.");
+        ImGui::TextDisabled("%s", I18n::Tr("attach_not_loaded"));
         return;
     }
 
     EnsureDatCatalog();
 
     if (m_datLoadState == DatLoadState::Loading) {
-        ImGui::Text("Loading item catalog...");
+        ImGui::TextUnformatted(I18n::Tr("attach_loading_catalog"));
         ImGui::ProgressBar(-1.0f * static_cast<float>(ImGui::GetTime()),
                            ImVec2(-1.0f, 0.0f),
                            "BaseItemTypes / ItemVisualIdentity / ItemClasses");
@@ -288,9 +305,9 @@ void AttachBrowseModal::RenderDatTab() {
     }
 
     if (m_datLoadState == DatLoadState::Failed) {
-        ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f),
-                           "Load failed: %s", m_datLoadError.c_str());
-        if (ImGui::Button("Retry")) {
+        ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f), "%s",
+                           I18n::TrF("attach_load_failed", { { "error", m_datLoadError } }).c_str());
+        if (ImGui::Button(I18n::TrId("attach_retry"))) {
             m_datLoadState = DatLoadState::Idle;
         }
         return;
@@ -310,21 +327,21 @@ void AttachBrowseModal::RenderDatTab() {
 void AttachBrowseModal::Render() {
     if (!m_showModal) return;
 
-    const std::string title = "Browse and Attach##AocBrowse";
-    ImGui::OpenPopup(title.c_str());
+    const char* title = I18n::TrId("attach_title");
+    ImGui::OpenPopup(title);
     ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_Appearing);
 
-    if (ImGui::BeginPopupModal(title.c_str(), &m_showModal, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::Text("Target socket: %s", m_targetSocket.c_str());
+    if (ImGui::BeginPopupModal(title, &m_showModal, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::TextUnformatted(I18n::TrF("attach_target_socket", { { "socket", m_targetSocket } }).c_str());
         ImGui::Separator();
 
         if (ImGui::BeginTabBar("##AocBrowseTabs", ImGuiTabBarFlags_None)) {
-            if (ImGui::BeginTabItem("Files")) {
+            if (ImGui::BeginTabItem(I18n::TrId("attach_tab_files"))) {
                 if (m_activeTab != Tab::Files) m_activeTab = Tab::Files;
                 RenderFilesTab();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("By Item Name")) {
+            if (ImGui::BeginTabItem(I18n::TrId("attach_tab_by_item_name"))) {
                 if (m_activeTab != Tab::ByItemName) {
                     m_activeTab = Tab::ByItemName;
                     m_datNeedsFocus = true;    // focus filter input on first frame of this tab
@@ -344,12 +361,13 @@ void AttachBrowseModal::RenderDatFilterRow() {
         ImGui::SetKeyboardFocusHere();
         m_datNeedsFocus = false;
     }
-    if (ImGui::InputTextWithHint("##DatFilter", "Filter by name or class...",
+    if (ImGui::InputTextWithHint("##DatFilter", I18n::Tr("attach_filter_name_hint"),
                                  m_datFilterBuf, sizeof(m_datFilterBuf))) {
         ApplyDatFilter();
     }
     const std::size_t total = m_catalog ? m_catalog->Items().size() : 0;
-    ImGui::Text("Results: %zu / %zu", m_datFilteredIndices.size(), total);
+    ImGui::TextUnformatted(I18n::TrF("attach_results", { { "shown", Num("%zu", m_datFilteredIndices.size()) },
+                                                         { "total", Num("%zu", total) } }).c_str());
 }
 
 void AttachBrowseModal::RenderDatResultsTable() {
@@ -371,9 +389,13 @@ void AttachBrowseModal::RenderDatResultsTable() {
         ImGui::TableSetupColumn("##Icon",
             ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort,
             kIconCellSize + kIconCellPadding);
-        ImGui::TableSetupColumn("Name",  ImGuiTableColumnFlags_DefaultSort, 0.55f);
-        ImGui::TableSetupColumn("Class", ImGuiTableColumnFlags_None,        0.30f);
-        ImGui::TableSetupColumn("Files", ImGuiTableColumnFlags_WidthFixed,  60.0f);
+        // The table is resizable: the Files column is measured on its translated header once.
+        const char* filesHeader = I18n::TrId("attach_col_files");
+        const float filesW = ImGui::CalcTextSize(filesHeader, nullptr, true).x + ImGui::GetStyle().CellPadding.x * 2.0f
+                           + ImGui::GetFontSize();
+        ImGui::TableSetupColumn(I18n::TrId("attach_col_name"),  ImGuiTableColumnFlags_DefaultSort, 0.55f);
+        ImGui::TableSetupColumn(I18n::TrId("attach_col_class"), ImGuiTableColumnFlags_None,        0.30f);
+        ImGui::TableSetupColumn(filesHeader, ImGuiTableColumnFlags_WidthFixed,  filesW > 60.0f ? filesW : 60.0f);
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
@@ -440,23 +462,23 @@ void AttachBrowseModal::RenderDatSelectionPanel() {
     if (m_datSelectedIndex < 0 ||
         m_datSelectedIndex >= static_cast<int>(m_datFilteredIndices.size()) ||
         !m_catalog) {
-        ImGui::TextDisabled("(no selection)");
-        if (!m_datLastError.empty()) {
-            ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f),
-                               "Error: %s", m_datLastError.c_str());
+        ImGui::TextDisabled("%s", I18n::Tr("common_no_selection"));
+        if (!m_datLastError.Empty()) {
+            ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f), "%s",
+                               I18n::TrF("error_detail", { { "detail", TextOf(m_datLastError) } }).c_str());
         }
         return;
     }
 
     const auto& item = m_catalog->Items()[m_datFilteredIndices[static_cast<std::size_t>(m_datSelectedIndex)]];
-    ImGui::Text("Selected: %s  (%s)", item.name.c_str(), item.id.c_str());
+    ImGui::TextUnformatted(I18n::TrF("attach_selected_item", { { "name", item.name }, { "id", item.id } }).c_str());
 
-    const char* preview = "(select)";
+    const char* preview = I18n::Tr("attach_select_file");
     if (m_datSelectedFileIdx >= 0 &&
         m_datSelectedFileIdx < static_cast<int>(item.files.size())) {
         preview = item.files[static_cast<std::size_t>(m_datSelectedFileIdx)].label.c_str();
     }
-    if (ImGui::BeginCombo("File", preview)) {
+    if (ImGui::BeginCombo(I18n::TrId("attach_file"), preview)) {
         for (int i = 0; i < static_cast<int>(item.files.size()); ++i) {
             const bool sel = (i == m_datSelectedFileIdx);
             ImGui::PushID(i);
@@ -471,9 +493,9 @@ void AttachBrowseModal::RenderDatSelectionPanel() {
         ImGui::EndCombo();
     }
 
-    if (!m_datLastError.empty()) {
-        ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f),
-                           "Error: %s", m_datLastError.c_str());
+    if (!m_datLastError.Empty()) {
+        ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f), "%s",
+                           I18n::TrF("error_detail", { { "detail", TextOf(m_datLastError) } }).c_str());
     }
 }
 
@@ -485,12 +507,14 @@ void AttachBrowseModal::RenderDatButtonsRow() {
         (m_datSelectedFileIdx >= 0) &&
         (m_mgr != nullptr);
 
+    const char* attachLabel = I18n::TrId("attach_attach");
+    const char* cancelLabel = I18n::TrId("common_cancel");
     if (!canAttach) ImGui::BeginDisabled();
-    if (ImGui::Button("Attach", ImVec2(100.0f, 0.0f))) TriggerDatAttach();
+    if (ImGui::Button(attachLabel, ImVec2(ButtonWidth(attachLabel, 7.5f), 0.0f))) TriggerDatAttach();
     if (!canAttach) ImGui::EndDisabled();
 
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) Close();
+    if (ImGui::Button(cancelLabel, ImVec2(ButtonWidth(cancelLabel, 7.5f), 0.0f))) Close();
 
     if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
         if (canAttach) TriggerDatAttach();
@@ -561,29 +585,29 @@ void AttachBrowseModal::OnDatRowClicked(int filteredRow) {
     if (!m_catalog) { m_datSelectedFileIdx = -1; return; }
     const auto& item = m_catalog->Items()[m_datFilteredIndices[static_cast<std::size_t>(filteredRow)]];
     m_datSelectedFileIdx = GGPKExp::Aoc::ItemVisualIdentityCatalog::PickDefaultFileIndex(item, m_parentAocPath);
-    m_datLastError.clear();
+    m_datLastError = {};
 }
 
 void AttachBrowseModal::TriggerDatAttach() {
-    m_datLastError.clear();
-    if (!m_mgr || !m_catalog) { m_datLastError = "GGPK not loaded"; return; }
+    m_datLastError = {};
+    if (!m_mgr || !m_catalog) { m_datLastError = { I18n::Key("attach_not_loaded"), {} }; return; }
     if (m_datSelectedIndex < 0 ||
         m_datSelectedIndex >= static_cast<int>(m_datFilteredIndices.size())) {
-        m_datLastError = "No item selected";
+        m_datLastError = { I18n::Key("attach_error_no_item"), {} };
         return;
     }
     const auto& item = m_catalog->Items()[m_datFilteredIndices[static_cast<std::size_t>(m_datSelectedIndex)]];
     if (m_datSelectedFileIdx < 0 ||
         m_datSelectedFileIdx >= static_cast<int>(item.files.size())) {
-        m_datLastError = "No file selected";
+        m_datLastError = { I18n::Key("attach_error_no_file"), {} };
         return;
     }
     const std::string& path = item.files[static_cast<std::size_t>(m_datSelectedFileIdx)].path;
 
     void* node = m_mgr->FindNodeByPath(path);
-    if (!node) { m_datLastError = "File not found: " + path; return; }
+    if (!node) { m_datLastError = { I18n::Key("attach_error_file_not_found"), { { "path", path } } }; return; }
     auto res = m_mgr->ReadFile(node);
-    if (!res.success) { m_datLastError = "Read failed: " + res.error; return; }
+    if (!res.success) { m_datLastError = { I18n::Key("attach_error_read_failed"), { { "error", res.error } } }; return; }
 
     if (m_onAttach) {
         m_onAttach(m_targetSocket, path, res.value);

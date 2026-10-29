@@ -1,4 +1,5 @@
 #include "NavigationBar.h"
+#include "UiText.h"
 #include <vector>
 #include <sstream>
 
@@ -98,7 +99,7 @@ void NavigationBar::Render() {
 
     // Breadcrumb trail
     if (m_currentPath.empty()) {
-        ImGui::TextDisabled("(no selection)");
+        ImGui::TextDisabled("%s", I18n::Tr("common_no_selection"));
         return;
     }
 
@@ -114,7 +115,7 @@ void NavigationBar::Render() {
     }
 
     if (segments.empty()) {
-        ImGui::TextDisabled("(root)");
+        ImGui::TextDisabled("%s", I18n::Tr("nav_root"));
         return;
     }
 

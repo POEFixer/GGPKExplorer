@@ -57,7 +57,15 @@ private:
     // Core
     GGPKExp::GGPKManager m_Manager;
     GGPKExp::VirtualTree m_Tree;
-    GGPKExp::DatSchema m_DatSchema;
+
+    // The DAT schema (Resources/dat-schema/schema.min.json, game data the host installs and
+    // updates: PSDK_GAMEDATA_GROUP_DAT_SCHEMA). Every schema loaded this session is kept, newest
+    // last, until the plugin is destroyed: viewers and workers hold raw pointers into a schema
+    // (DatViewer's table, a running search or export), so a reload never frees one in use.
+    // Declared before the panels, so it outlives them.
+    std::vector<std::unique_ptr<GGPKExp::DatSchema>> m_datSchemas;
+    std::future<std::unique_ptr<GGPKExp::DatSchema>> m_datSchemaLoad;   // a load in flight
+    uint64_t m_datSchemaRevision = UINT64_MAX;   // the game-data revision of the last attempt
 
     // UI panels
     GGPKExp::TreePanel m_TreePanel;
@@ -89,9 +97,12 @@ private:
     bool m_SelectedIsDirectory = false;
 
     // FA6 atlas probe (Phase 7 gate). Deferred to first render so the host's
-    // font atlas is guaranteed built before probing.
+    // font atlas is guaranteed built before probing, and repeated whenever the
+    // host rebuilds its atlas (a language change reloads the fonts).
     bool m_fa6Available = false;
     bool m_fa6Checked = false;
+    const void* m_fa6Atlas = nullptr;      // the atlas probed ...
+    unsigned int m_fa6AtlasFontId = 0;     // ... and its first font's FontId then
 
     // Phase 7 / T23 — persisted width of the DatViewer right-hand editor panel.
     // Loaded from settings.json in LoadSettings; written back in SaveSettings
@@ -119,6 +130,9 @@ private:
     static constexpr uint32_t kSaveDebounceMs = 500;
 
     void RenderMainContent();
+    GGPKExp::DatSchema* CurrentDatSchema();
+    void PollDatSchema();
+    void UseDatSchema(GGPKExp::DatSchema* schema);
     void LoadSettings();
     void OpenGGPK(const std::string& path);
     std::string ReadSmootherGGPKPath();

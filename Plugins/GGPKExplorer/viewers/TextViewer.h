@@ -63,9 +63,13 @@ private:
     std::function<void(const std::string&)> m_onSave;
     bool m_isSaving = false;
 
-    // Monospace font cache (non-owning, lifetime managed by ImGui font atlas)
+    // Monospace font cache (non-owning, lifetime managed by ImGui font atlas): valid for the
+    // atlas it was found in, identified by the atlas and its first font's FontId (an atlas
+    // rebuild frees every ImFont and numbers the new ones afresh).
     ::ImFont* m_monoFont = nullptr;
     bool m_monoFontSearched = false;
+    const void* m_monoFontAtlas = nullptr;
+    unsigned int m_monoFontAtlasFontId = 0;
 
     // Hyperlink overlay state
     std::string m_notFoundPath;

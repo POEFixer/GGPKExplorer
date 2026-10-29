@@ -1,4 +1,5 @@
 #include "ExtractDialog.h"
+#include "UiText.h"
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -115,18 +116,21 @@ void ExtractDialog::CollectExtensionStats(const std::string& dirPath) {
 void ExtractDialog::RenderExtractOptions() {
     if (!m_showExtractOptions) return;
 
-    ImGui::OpenPopup("Extract Options##GGPKExp");
+    const char* title = I18n::TrId("extract_title");
+    ImGui::OpenPopup(title);
     ImGui::SetNextWindowSize(ImVec2(450, 600), ImGuiCond_Appearing);
     ImGui::SetNextWindowSizeConstraints(ImVec2(350, 400), ImVec2(FLT_MAX, FLT_MAX));
 
-    if (ImGui::BeginPopupModal("Extract Options##GGPKExp", &m_showExtractOptions,
+    if (ImGui::BeginPopupModal(title, &m_showExtractOptions,
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 
         // Header with total count
         int totalIncluded = 0;
         for (const auto& f : m_extractOptions.filters)
             if (f.included) totalIncluded += f.count;
-        ImGui::Text("1. Select file types:  (%d files selected)", totalIncluded);
+        ImGui::TextUnformatted(I18n::Tr("extract_step_types"));
+        ImGui::SameLine(0.0f, ImGui::GetFontSize());
+        ImGui::TextDisabled("%s", I18n::TrF("extract_selected_count", { { "count", Num("%d", totalIncluded) } }).c_str());
 
         ImGui::Spacing();
 
@@ -143,9 +147,10 @@ void ExtractDialog::RenderExtractOptions() {
             | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit;
 
         if (ImGui::BeginTable("##ExtFilters", 3, tableFlags, ImVec2(-1, tableH))) {
-            ImGui::TableSetupColumn("Include",   ImGuiTableColumnFlags_WidthFixed, 55.0f);
-            ImGui::TableSetupColumn("Extension", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("Count",     ImGuiTableColumnFlags_WidthFixed, 70.0f);
+            // Fixed columns fit their translated header and cells (width 0: not resizable).
+            ImGui::TableSetupColumn(I18n::TrId("extract_col_include"),   ImGuiTableColumnFlags_WidthFixed, 0.0f);
+            ImGui::TableSetupColumn(I18n::TrId("extract_col_extension"), ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn(I18n::TrId("extract_col_count"),     ImGuiTableColumnFlags_WidthFixed, 0.0f);
             ImGui::TableHeadersRow();
 
             ImGuiListClipper clipper;
@@ -159,7 +164,8 @@ void ExtractDialog::RenderExtractOptions() {
                     ImGui::Checkbox("##inc", &f.included);
                     ImGui::PopID();
                     ImGui::TableSetColumnIndex(1);
-                    ImGui::TextUnformatted(f.extension.c_str());
+                    ImGui::TextUnformatted(f.extension == "no_extension" ? I18n::Tr("extract_no_extension")
+                                                                         : f.extension.c_str());
                     ImGui::TableSetColumnIndex(2);
                     ImGui::Text("%d", f.count);
                 }
@@ -170,40 +176,44 @@ void ExtractDialog::RenderExtractOptions() {
 
         // Size restrictions
         ImGui::Separator();
-        ImGui::Text("2. Size restrictions:");
-        ImGui::Checkbox("Skip files larger than:", &m_extractOptions.skipLargeFiles);
+        ImGui::TextUnformatted(I18n::Tr("extract_step_size"));
+        ImGui::Checkbox(I18n::TrId("extract_skip_larger"), &m_extractOptions.skipLargeFiles);
         if (m_extractOptions.skipLargeFiles) {
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(80.0f);
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
             int maxSize = static_cast<int>(m_extractOptions.maxFileSize);
             if (ImGui::InputInt("##maxSize", &maxSize, 0, 0)) {
                 if (maxSize < 1) maxSize = 1;
                 m_extractOptions.maxFileSize = maxSize;
             }
             ImGui::SameLine();
-            static const char* units[] = { "KB", "MB", "GB" };
-            ImGui::SetNextItemWidth(55.0f);
+            const char* units[] = { I18n::Tr("unit_kb"), I18n::Tr("unit_mb"), I18n::Tr("unit_gb") };
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4.5f);
             ImGui::Combo("##sizeUnit", &m_extractOptions.sizeUnit, units, 3);
         }
 
         // Buttons row
         ImGui::Separator();
 
-        if (ImGui::Button("Select All", ImVec2(100, 0))) {
+        const char* selectAllLabel = I18n::TrId("extract_select_all");
+        const char* selectNoneLabel = I18n::TrId("extract_select_none");
+        const char* extractLabel = I18n::TrId("extract_extract");
+        const char* cancelLabel = I18n::TrId("common_cancel");
+        if (ImGui::Button(selectAllLabel, ImVec2(ButtonWidth(selectAllLabel, 7.5f), 0))) {
             for (auto& f : m_extractOptions.filters) f.included = true;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Select None", ImVec2(100, 0))) {
+        if (ImGui::Button(selectNoneLabel, ImVec2(ButtonWidth(selectNoneLabel, 7.5f), 0))) {
             for (auto& f : m_extractOptions.filters) f.included = false;
         }
         ImGui::SameLine(0, 20);
-        if (ImGui::Button("Extract", ImVec2(90, 0))) {
+        if (ImGui::Button(extractLabel, ImVec2(ButtonWidth(extractLabel, 7.0f), 0))) {
             m_showExtractOptions = false;
             ImGui::CloseCurrentPopup();
             ExtractDirectoryFiltered();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(90, 0))) {
+        if (ImGui::Button(cancelLabel, ImVec2(ButtonWidth(cancelLabel, 7.0f), 0))) {
             m_showExtractOptions = false;
             ImGui::CloseCurrentPopup();
         }
@@ -232,32 +242,17 @@ void ExtractDialog::DoExtractFile() {
     // Determine default filename and filter from extension
     std::wstring wideName = Utf8ToWide(entry.name);
 
-    // Build double-null-terminated filter string for OPENFILENAMEW.
-    wchar_t filterBuf[512] = {};
-    size_t filterPos = 0;
-
-    auto appendFilter = [&](const wchar_t* label, const wchar_t* pattern) {
-        size_t labelLen = wcslen(label);
-        size_t patternLen = wcslen(pattern);
-        if (filterPos + labelLen + 1 + patternLen + 1 + 1 < 512) {
-            wcscpy_s(filterBuf + filterPos, 512 - filterPos, label);
-            filterPos += labelLen + 1;
-            wcscpy_s(filterBuf + filterPos, 512 - filterPos, pattern);
-            filterPos += patternLen + 1;
-        }
-    };
-
+    // Double-null-terminated filter string for OPENFILENAMEW, labels in the program language.
+    DialogFilter filter;
     auto dotPos = entry.name.rfind('.');
     if (dotPos != std::string::npos) {
         std::string ext = entry.name.substr(dotPos);
-        std::wstring wext = Utf8ToWide(ext);
-        std::wstring wextUpper = wext;
-        for (auto& c : wextUpper) c = static_cast<wchar_t>(towupper(c));
-        std::wstring label = wextUpper.substr(1) + L" Files (*" + wext + L")";
-        std::wstring pattern = L"*" + wext;
-        appendFilter(label.c_str(), pattern.c_str());
+        std::string extUpper = ext.substr(1);
+        for (auto& c : extUpper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        filter.Add(I18n::TrF("dialog_filter_ext_files", { { "ext", extUpper } }), L"*" + Utf8ToWide(ext));
     }
-    appendFilter(L"All Files (*.*)", L"*.*");
+    filter.Add(I18n::Tr("dialog_filter_all_files"), L"*.*");
+    const std::wstring title = Wide(I18n::Tr("dialog_extract_file_as"));
 
     wchar_t savePath[MAX_PATH] = {};
     if (wideName.size() < MAX_PATH)
@@ -266,11 +261,11 @@ void ExtractDialog::DoExtractFile() {
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = nullptr;
-    ofn.lpstrFilter = filterBuf;
+    ofn.lpstrFilter = filter.Get();
     ofn.lpstrFile = savePath;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-    ofn.lpstrTitle = L"Extract File As...";
+    ofn.lpstrTitle = title.c_str();
 
     if (!GetSaveFileNameW(&ofn)) return;
 
@@ -313,14 +308,17 @@ void ExtractDialog::DoReplaceFile() {
     if (entry.isDirectory || !entry.nodePtr) return;
 
     wchar_t filePath[MAX_PATH] = {};
+    DialogFilter filter;
+    filter.Add(I18n::Tr("dialog_filter_all_files"), L"*.*");
+    const std::wstring title = Wide(I18n::Tr("dialog_select_replacement"));
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = nullptr;
-    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = filter.Get();
     ofn.lpstrFile = filePath;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-    ofn.lpstrTitle = L"Select Replacement File";
+    ofn.lpstrTitle = title.c_str();
 
     if (!GetOpenFileNameW(&ofn)) return;
 
@@ -373,8 +371,9 @@ void ExtractDialog::DoExtractDirectory() {
     HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     bool comInit = SUCCEEDED(comHr);
 
+    const std::wstring browseTitle = Wide(I18n::Tr("dialog_output_dir_extract"));
     BROWSEINFOW bi = {};
-    bi.lpszTitle = L"Select output directory for extraction";
+    bi.lpszTitle = browseTitle.c_str();
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
 
     LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
@@ -419,7 +418,7 @@ void ExtractDialog::DoExtractDirectory() {
     int totalFiles = static_cast<int>(filesToExtract.size());
     m_statusBar->progressActive.store(true);
     m_statusBar->progress.store(0.0f);
-    m_statusBar->progressLabel = "Extracting...";
+    m_statusBar->progressLabel = LocText{ I18n::Key("progress_extracting"), {} };
     m_extractRunning.store(true);
 
     m_extractThread = std::thread([this, filesToExtract = std::move(filesToExtract), outputDir, totalFiles]() {
@@ -462,9 +461,8 @@ void ExtractDialog::DoExtractDirectory() {
         m_statusBar->progressActive.store(false);
         m_extractRunning.store(false);
 
-        char resultBuf[128];
-        snprintf(resultBuf, sizeof(resultBuf), "Extracted %d/%d files (%d failed)", extracted, totalFiles, failed);
-        m_statusBar->progressLabel = resultBuf;
+        // The result goes to the (English) log: the status bar hides its label with the bar.
+        LogFmt(m_log, "Info", "GGPKExplorer: extracted %d/%d files (%d failed)", extracted, totalFiles, failed);
     });
 }
 
@@ -510,8 +508,9 @@ void ExtractDialog::ExtractDirectoryFiltered() {
     HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     bool comInit = SUCCEEDED(comHr);
 
+    const std::wstring browseTitle = Wide(I18n::Tr("dialog_output_dir_filtered"));
     BROWSEINFOW bi = {};
-    bi.lpszTitle = L"Select output directory for filtered extraction";
+    bi.lpszTitle = browseTitle.c_str();
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
 
     LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
@@ -568,7 +567,7 @@ void ExtractDialog::ExtractDirectoryFiltered() {
     int totalFiles = static_cast<int>(filesToExtract.size());
     m_statusBar->progressActive.store(true);
     m_statusBar->progress.store(0.0f);
-    m_statusBar->progressLabel = "Extracting (filtered)...";
+    m_statusBar->progressLabel = LocText{ I18n::Key("progress_extracting_filtered"), {} };
     m_extractRunning.store(true);
 
     bool skipLarge = m_extractOptions.skipLargeFiles;
@@ -617,10 +616,9 @@ void ExtractDialog::ExtractDirectoryFiltered() {
         m_statusBar->progressActive.store(false);
         m_extractRunning.store(false);
 
-        char resultBuf[128];
-        snprintf(resultBuf, sizeof(resultBuf), "Extracted %d/%d files (%d failed, %d skipped)",
-                 extracted, totalFiles, failed, skipped);
-        m_statusBar->progressLabel = resultBuf;
+        // The result goes to the (English) log: the status bar hides its label with the bar.
+        LogFmt(m_log, "Info", "GGPKExplorer: extracted %d/%d files (%d failed, %d skipped)",
+               extracted, totalFiles, failed, skipped);
     });
 }
 
@@ -675,8 +673,9 @@ void ExtractDialog::DoExtractSelectedFiles() {
     HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     bool comInit = SUCCEEDED(comHr);
 
+    const std::wstring browseTitle = Wide(I18n::Tr("dialog_output_dir"));
     BROWSEINFOW bi = {};
-    bi.lpszTitle = L"Select output directory";
+    bi.lpszTitle = browseTitle.c_str();
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
 
     LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
@@ -700,7 +699,7 @@ void ExtractDialog::DoExtractSelectedFiles() {
     int totalFiles = static_cast<int>(files.size());
     m_statusBar->progressActive.store(true);
     m_statusBar->progress.store(0.0f);
-    m_statusBar->progressLabel = "Extracting selected...";
+    m_statusBar->progressLabel = LocText{ I18n::Key("progress_extracting_selected"), {} };
     m_extractRunning.store(true);
 
     m_extractThread = std::thread([this, files = std::move(files), outputDir, totalFiles]() {
@@ -739,10 +738,8 @@ void ExtractDialog::DoExtractSelectedFiles() {
         m_statusBar->progressActive.store(false);
         m_extractRunning.store(false);
 
-        char resultBuf[128];
-        snprintf(resultBuf, sizeof(resultBuf), "Extracted %d/%d files (%d failed)",
-                 extracted, totalFiles, failed);
-        m_statusBar->progressLabel = resultBuf;
+        // The result goes to the (English) log: the status bar hides its label with the bar.
+        LogFmt(m_log, "Info", "GGPKExplorer: extracted %d/%d files (%d failed)", extracted, totalFiles, failed);
     });
 }
 

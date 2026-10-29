@@ -8,6 +8,7 @@
 #include "../core/PathUtils.h"
 #include "TreePanel.h"
 #include "StatusBar.h"
+#include "UiText.h"
 
 #include <cctype>
 #include <cstdio>
@@ -134,35 +135,30 @@ void SaveAsExporter::SaveSelectionAs(SaveFormat fmt) {
         wchar_t savePath[MAX_PATH] = {};
         if (defName.size() < MAX_PATH) wcsncpy_s(savePath, defName.c_str(), defName.size());
 
-        // Build "FMT Files (*.ext)\0*.ext\0All Files (*.*)\0*.*\0\0"
+        // "<FMT> files (*.ext)", "All files (*.*)": labels in the program language.
         std::wstring ext = OutExtW(fmt);
-        wchar_t filterBuf[128] = {};
-        size_t pos = 0;
-        auto put = [&](const std::wstring& s) {
-            for (wchar_t c : s) { if (pos < 126) filterBuf[pos++] = c; }
-            if (pos < 127) filterBuf[pos++] = L'\0';
-        };
-        put(std::wstring(FormatNameW(fmt)) + L" Files (*" + ext + L")");
-        put(L"*" + ext);
-        put(L"All Files (*.*)");
-        put(L"*.*");
+        DialogFilter filter;
+        filter.Add(I18n::TrF("dialog_filter_ext_files", { { "ext", FormatName(fmt) } }), L"*" + ext);
+        filter.Add(I18n::Tr("dialog_filter_all_files"), L"*.*");
+        const std::wstring title = Wide(I18n::Tr("dialog_save_as"));
 
         OPENFILENAMEW ofn = {};
         ofn.lStructSize = sizeof(ofn);
         ofn.hwndOwner = nullptr;
-        ofn.lpstrFilter = filterBuf;
+        ofn.lpstrFilter = filter.Get();
         ofn.lpstrFile = savePath;
         ofn.nMaxFile = MAX_PATH;
         ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
         ofn.lpstrDefExt = OutExtW(fmt) + 1; // skip the leading dot
-        ofn.lpstrTitle = L"Save As...";
+        ofn.lpstrTitle = title.c_str();
         if (!GetSaveFileNameW(&ofn)) return;
         singleOut = std::filesystem::path(savePath);
     } else {
         HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         bool comInit = SUCCEEDED(comHr);
+        const std::wstring browseTitle = Wide(I18n::Tr("dialog_output_folder"));
         BROWSEINFOW bi = {};
-        bi.lpszTitle = L"Select output folder";
+        bi.lpszTitle = browseTitle.c_str();
         bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
         LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
         std::wstring folder;
@@ -180,7 +176,7 @@ void SaveAsExporter::SaveSelectionAs(SaveFormat fmt) {
     m_running.store(true);
     if (m_statusBar) {
         m_statusBar->progress.store(0.0f);
-        m_statusBar->progressLabel = std::string("Save As ") + FormatName(fmt);
+        m_statusBar->progressLabel = LocText{ I18n::Key("progress_save_as"), { { "format", FormatName(fmt) } } };
         m_statusBar->progressActive.store(true);
     }
     RunExport(fmt, std::move(targets), std::move(destRoot), std::move(singleOut));
@@ -188,7 +184,10 @@ void SaveAsExporter::SaveSelectionAs(SaveFormat fmt) {
 
 void SaveAsExporter::RunExport(SaveFormat fmt, std::vector<Target> targets,
                                std::filesystem::path destRoot, std::filesystem::path singleOut) {
-    m_thread = std::thread([this, fmt, targets = std::move(targets),
+    // The schema of this run: the game data may replace m_schema meanwhile (the old one stays
+    // alive, GGPKExplorer keeps every schema it loaded).
+    DatSchema* schema = m_schema;
+    m_thread = std::thread([this, fmt, schema, targets = std::move(targets),
                             destRoot = std::move(destRoot), singleOut = std::move(singleOut)]() mutable {
         size_t ok = 0, skippedNoSchema = 0, failed = 0;
         const size_t total = targets.size();
@@ -216,11 +215,11 @@ void SaveAsExporter::RunExport(SaveFormat fmt, std::vector<Target> targets,
                 std::string err;
                 switch (fmt) {
                 case SaveFormat::Json:
-                    if (m_schema) wrote = DatExport::ConvertBytesToJson(r.value, ExtractTableName(t.ggpkPath), *m_schema, outPath, &err);
+                    if (schema && schema->IsLoaded()) wrote = DatExport::ConvertBytesToJson(r.value, ExtractTableName(t.ggpkPath), *schema, outPath, &err);
                     else err = "no schema";
                     break;
                 case SaveFormat::Csv:
-                    if (m_schema) wrote = DatExport::ConvertBytesToCsv(r.value, ExtractTableName(t.ggpkPath), *m_schema, outPath, &err);
+                    if (schema && schema->IsLoaded()) wrote = DatExport::ConvertBytesToCsv(r.value, ExtractTableName(t.ggpkPath), *schema, outPath, &err);
                     else err = "no schema";
                     break;
                 case SaveFormat::Dds: {

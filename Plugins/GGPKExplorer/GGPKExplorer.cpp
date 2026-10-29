@@ -1,3 +1,8 @@
+// Texts in the program language (PluginI18n.h): lang/<code>.json next to the DLL, English
+// compiled in through lang_en.generated.h (python tools/plugin_i18n/gen.py Plugins/GGPKExplorer).
+// Only the chrome (this file and ui/) is translated; viewers/, core/, dev/ and the log stay English.
+#include "../../POEFixer/plugin_sdk/PluginSDK.h"
+#include "lang_en.generated.h"   // the embedded English: once per DLL, after PluginSDK.h
 #include "GGPKExplorer.h"
 #include "../../POEFixer/imgui/imgui.h"
 #include "lib/json.hpp"
@@ -18,6 +23,7 @@
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+namespace I18n = PluginSDK::I18n;
 
 // Helper: format-then-log against the v6 LogService::Log(level, message).
 static void PluginLog(const PluginSDK::Context* ctx, const char* category, const char* fmt, ...) {
@@ -90,22 +96,10 @@ void GGPKExplorer::OnEnable(bool /*isGameAttached*/) {
         m_taskRunner = std::make_unique<GGPKExp::AsyncTaskRunner>(2);
     }
 
-    // Load DAT schema
-    if (!m_DatSchema.IsLoaded()) {
-        wchar_t exePath[MAX_PATH];
-        GetModuleFileNameW(NULL, exePath, MAX_PATH);
-        auto schemaPath = std::filesystem::path(exePath).parent_path() / "resources" / "dat-schema" / "schema.min.json";
-        if (std::filesystem::exists(schemaPath)) {
-            // Pass fs::path directly — schemaPath.string() throws std::filesystem_error
-            // under the default C locale when the exe lives in a directory
-            // with non-ASCII chars (Cyrillic etc.). DatSchema::Load now takes
-            // an fs::path which keeps the native wide form.
-            m_DatSchema.Load(schemaPath);
-        }
-    }
-
-    // Pass schema and task runner to DatViewer inside ContentPanel
-    m_ContentPanel.SetDatSchema(&m_DatSchema);
+    // Pass schema and task runner to DatViewer inside ContentPanel. The DAT schema itself loads
+    // in the background (PollDatSchema, started at the end of OnEnable and polled every frame);
+    // until it is there the DAT views show "Waiting for game data".
+    m_ContentPanel.SetDatSchema(CurrentDatSchema());
     if (m_taskRunner) {
         m_ContentPanel.SetTaskRunner(m_taskRunner.get());
     }
@@ -143,7 +137,7 @@ void GGPKExplorer::OnEnable(bool /*isGameAttached*/) {
     m_saveAsExporter->SetTree(&m_Tree);
     m_saveAsExporter->SetTreePanel(&m_TreePanel);
     m_saveAsExporter->SetStatusBar(&m_StatusBar);
-    m_saveAsExporter->SetSchema(&m_DatSchema);
+    m_saveAsExporter->SetSchema(CurrentDatSchema());
     m_saveAsExporter->SetLogCallback([this](const char* category, const char* message) {
         ctx()->Log.Log(category, message);
     });
@@ -219,7 +213,87 @@ void GGPKExplorer::OnEnable(bool /*isGameAttached*/) {
         }
     }
 
+    // Start loading the DAT schema (or adopt one a previous session left loading).
+    PollDatSchema();
+
     PluginLog(ctx(), "Info", "GGPKExplorer enabled");
+}
+
+// ---------------------------------------------------------------------------
+// DAT schema: game data the host installs and updates (Game Data v2, desktop
+// 371+: PSDK_GAMEDATA_GROUP_DAT_SCHEMA). Loaded off the drawing thread, again
+// whenever its revision moves; an older host (revision 0) ships the file with
+// the program, so it loads once.
+// ---------------------------------------------------------------------------
+
+// The schema in use: the newest one loaded, or an empty (not loaded) one before the first load.
+GGPKExp::DatSchema* GGPKExplorer::CurrentDatSchema() {
+    if (m_datSchemas.empty())
+        m_datSchemas.push_back(std::make_unique<GGPKExp::DatSchema>());
+    return m_datSchemas.back().get();
+}
+
+// Hands the schema to everything that reads it. Old schemas stay alive (m_datSchemas), so a
+// viewer or a worker still holding one keeps valid tables.
+void GGPKExplorer::UseDatSchema(GGPKExp::DatSchema* schema) {
+    m_ContentPanel.SetDatSchema(schema);
+    m_SearchDialog.SetDatSchema(schema);
+    if (m_saveAsExporter) m_saveAsExporter->SetSchema(schema);
+}
+
+// Drawing thread: adopts a finished load; starts a load when the schema's game-data revision
+// moved since the last attempt and the file is there (a missing file waits for the next move).
+void GGPKExplorer::PollDatSchema() {
+    if (m_datSchemaLoad.valid()) {
+        if (m_datSchemaLoad.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+            return;
+        std::unique_ptr<GGPKExp::DatSchema> loaded = m_datSchemaLoad.get();
+        if (loaded && loaded->IsLoaded()) {
+            m_datSchemas.push_back(std::move(loaded));
+            UseDatSchema(m_datSchemas.back().get());
+            PluginLog(ctx(), "Info", "GGPKExplorer: DAT schema loaded (game data revision %llu)",
+                      static_cast<unsigned long long>(m_datSchemaRevision));
+        } else if (loaded) {
+            PluginLog(ctx(), "Error", "GGPKExplorer: DAT schema not loaded: %s", loaded->GetError().c_str());
+            // No schema loaded yet: the views show why this load failed instead of waiting for
+            // ever (a schema loaded earlier stays in use). The next revision tries again.
+            if (!CurrentDatSchema()->IsLoaded()) {
+                m_datSchemas.push_back(std::move(loaded));
+                UseDatSchema(m_datSchemas.back().get());
+            }
+        }
+        return;
+    }
+
+    const uint64_t revision = ctx()->Lang.GameDataRevision(PSDK_GAMEDATA_GROUP_DAT_SCHEMA);
+    if (revision == m_datSchemaRevision) return;
+    m_datSchemaRevision = revision;
+
+    wchar_t exePath[MAX_PATH]{};
+    const DWORD len = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
+    // fs::path keeps the native wide form: path::string() throws under the default C locale
+    // when the program folder has non-ASCII characters (Cyrillic etc.).
+    const fs::path schemaPath = fs::path(exePath).parent_path() / "Resources" / "dat-schema" / "schema.min.json";
+    std::error_code ec;
+    if (!fs::exists(schemaPath, ec)) {
+        PluginLog(ctx(), "Info", "GGPKExplorer: waiting for the DAT schema (game data revision %llu)",
+                  static_cast<unsigned long long>(revision));
+        return;
+    }
+    m_datSchemaLoad = std::async(std::launch::async, [schemaPath]() {
+        auto schema = std::make_unique<GGPKExp::DatSchema>();
+        try {
+            schema->Load(schemaPath);
+        } catch (const std::exception& e) {
+            schema->FailUnexpected(e.what());
+        } catch (...) {
+            schema->FailUnexpected(nullptr);
+        }
+        // Not loaded: GetError() says why (the views show it); the next revision tries again.
+        if (!schema->IsLoaded() && schema->GetError().empty()) schema->FailUnexpected(nullptr);
+        return schema;
+    });
 }
 
 void GGPKExplorer::OnDisable() {
@@ -251,6 +325,10 @@ void GGPKExplorer::OnDisable() {
     // Wait for any pending async open to complete before closing
     if (m_openFuture.valid()) {
         m_openFuture.wait();
+    }
+    // A schema load in flight finishes here; the next OnEnable adopts its result.
+    if (m_datSchemaLoad.valid()) {
+        m_datSchemaLoad.wait();
     }
     m_taskRunner.reset();
 
@@ -308,8 +386,16 @@ void GGPKExplorer::RenderMainContent() {
     // missing, the host did not merge FA6 into the active atlas and DatViewer
     // icons will need text fallbacks.
     // ====================================================================
+    // The host rebuilds its atlas when the language changes (every ImFont is new then, with a new
+    // FontId): probe again for the new atlas.
+    ImGuiIO& atlasIo = ImGui::GetIO();
+    const unsigned int atlasFontId = atlasIo.Fonts->Fonts.Size > 0 ? atlasIo.Fonts->Fonts[0]->FontId : 0u;
+    if (m_fa6Checked && (m_fa6Atlas != atlasIo.Fonts || m_fa6AtlasFontId != atlasFontId))
+        m_fa6Checked = false;
     if (!m_fa6Checked) {
         m_fa6Checked = true;
+        m_fa6Atlas = atlasIo.Fonts;
+        m_fa6AtlasFontId = atlasFontId;
         ImGuiIO& io = ImGui::GetIO();
         m_fa6Available = false;
 
@@ -334,6 +420,9 @@ void GGPKExplorer::RenderMainContent() {
         // SetFA6Available call.
         m_ContentPanel.SetFA6Available(m_fa6Available);
     }
+
+    // DAT schema: adopt a finished load, reload when the host updated the game data.
+    PollDatSchema();
 
     // NOTE: UI settings debounced save lives AFTER ContentPanel::Render (see
     // below). Polling here would miss same-frame speed edits because the
@@ -379,7 +468,7 @@ void GGPKExplorer::RenderMainContent() {
                     });
                     m_SearchDialog.SetTree(&m_Tree);
                     m_SearchDialog.SetManager(&m_Manager);
-                    m_SearchDialog.SetDatSchema(&m_DatSchema);
+                    m_SearchDialog.SetDatSchema(CurrentDatSchema());
                     m_SearchDialog.SetFileSearcher(&m_FileSearcher);
                     m_SearchDialog.SetContentSearcher(&m_ContentSearcher);
                     m_SearchDialog.SetDatSearcher(&m_DatSearcher);
@@ -432,9 +521,10 @@ void GGPKExplorer::RenderMainContent() {
             ImVec2 p(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
             drawList->AddCircleFilled(p, 3.5f, IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)));
         }
-        ImVec2 textSize = ImGui::CalcTextSize("Loading...");
+        const char* loadingText = I18n::Tr("status_loading");
+        ImVec2 textSize = ImGui::CalcTextSize(loadingText);
         drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y + radius + 12.0f),
-            IM_COL32(255, 255, 255, 255), "Loading...");
+            IM_COL32(255, 255, 255, 255), loadingText);
         return; // skip rest of rendering this frame
     }
 
@@ -463,9 +553,10 @@ void GGPKExplorer::RenderMainContent() {
                 ImVec2 p(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
                 drawList->AddCircleFilled(p, 3.5f, IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)));
             }
-            ImVec2 textSize = ImGui::CalcTextSize("Saving...");
+            const char* savingText = I18n::Tr("status_saving");
+            ImVec2 textSize = ImGui::CalcTextSize(savingText);
             drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y + radius + 12.0f),
-                IM_COL32(255, 255, 255, 255), "Saving...");
+                IM_COL32(255, 255, 255, 255), savingText);
             return; // skip rest of rendering this frame
         }
     }
@@ -482,7 +573,8 @@ void GGPKExplorer::RenderMainContent() {
     // ====================================================================
     {
         // Path label
-        ImGui::Text("Path:");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(I18n::Tr("toolbar_path"));
         ImGui::SameLine();
 
         // Path input — fixed width
@@ -507,17 +599,20 @@ void GGPKExplorer::RenderMainContent() {
         // "..." button — opens file dialog for .ggpk files
         if (ImGui::Button("...", ImVec2(32.0f, 0.0f))) {
             wchar_t filePath[MAX_PATH] = {};
+            GGPKExp::DialogFilter filter;
+            filter.Add(I18n::Tr("dialog_filter_game_files"), L"*.ggpk;_.index.bin")
+                  .Add(I18n::Tr("dialog_filter_ggpk_files"), L"*.ggpk")
+                  .Add(I18n::Tr("dialog_filter_index_files"), L"_.index.bin")
+                  .Add(I18n::Tr("dialog_filter_all_files"), L"*.*");
+            const std::wstring title = GGPKExp::Wide(I18n::Tr("dialog_select_game_file"));
             OPENFILENAMEW ofn = {};
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = nullptr;
-            ofn.lpstrFilter = L"Game Files (*.ggpk;_.index.bin)\0*.ggpk;_.index.bin\0"
-                              L"GGPK Files (*.ggpk)\0*.ggpk\0"
-                              L"Index Files (_.index.bin)\0_.index.bin\0"
-                              L"All Files (*.*)\0*.*\0";
+            ofn.lpstrFilter = filter.Get();
             ofn.lpstrFile = filePath;
             ofn.nMaxFile = MAX_PATH;
             ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-            ofn.lpstrTitle = L"Select Content.ggpk or _.index.bin";
+            ofn.lpstrTitle = title.c_str();
 
             if (GetOpenFileNameW(&ofn)) {
                 std::string utf8Path = WideToUtf8(filePath);
@@ -530,7 +625,8 @@ void GGPKExplorer::RenderMainContent() {
         ImGui::SameLine();
 
         // Load button — async: submits to task runner, spinner renders while loading
-        if (ImGui::Button("Load", ImVec2(100.0f, 0.0f)) && !m_ggpkLoadPending) {
+        const char* loadLabel = I18n::TrId("toolbar_load");
+        if (ImGui::Button(loadLabel, ImVec2(GGPKExp::ButtonWidth(loadLabel, 7.5f), 0.0f)) && !m_ggpkLoadPending) {
             if (!m_GgpkPath.empty() && m_taskRunner) {
                 // Game-running gate: PoE holds a lock on the GGPK file while the
                 // process is alive. DISABLED 2026-09-04 --
@@ -558,7 +654,7 @@ void GGPKExplorer::RenderMainContent() {
                     m_StatusBar.selectedSize = -1;
                     m_StatusBar.progress.store(0.0f);
                     m_StatusBar.progressActive.store(false);
-                    m_StatusBar.progressLabel.clear();
+                    m_StatusBar.progressLabel = {};
                     m_isLoaded = false;
 
                     // Initialize Oodle if needed
@@ -578,7 +674,8 @@ void GGPKExplorer::RenderMainContent() {
         // Unload button: adjacent to Load (no text between them)
         if (m_isLoaded && m_Manager.IsOpen()) {
             ImGui::SameLine();
-            if (ImGui::Button("Unload", ImVec2(100.0f, 0.0f))) {
+            const char* unloadLabel = I18n::TrId("toolbar_unload");
+            if (ImGui::Button(unloadLabel, ImVec2(GGPKExp::ButtonWidth(unloadLabel, 7.5f), 0.0f))) {
                 m_Manager.Close();
                 m_Tree.Clear();
                 m_NavBar.Clear();
@@ -599,7 +696,8 @@ void GGPKExplorer::RenderMainContent() {
             ImGui::SameLine();
             ImGui::Dummy(ImVec2(16.0f, 0.0f));
             ImGui::SameLine();
-            if (ImGui::Button("\xef\x80\xae Bookmarks")) {
+            const std::string bookmarksLabel = std::string("\xef\x80\xae ") + I18n::TrId("toolbar_bookmarks");
+            if (ImGui::Button(bookmarksLabel.c_str())) {
                 if (m_bookmarkMgr) m_bookmarkMgr->Open();
             }
 
@@ -609,7 +707,7 @@ void GGPKExplorer::RenderMainContent() {
                 ImGui::OpenPopup("##GGPKSortPopup");
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Sort");
+                ImGui::SetTooltip("%s", I18n::Tr("toolbar_sort"));
             }
 
             if (ImGui::BeginPopup("##GGPKSortPopup")) {
@@ -620,23 +718,34 @@ void GGPKExplorer::RenderMainContent() {
                         SaveSettings();
                     }
                 };
-                item("None",             GGPKExp::SortMode::None);
-                item("Name",             GGPKExp::SortMode::Name);
-                item("Size",             GGPKExp::SortMode::Size);
-                item("Type",             GGPKExp::SortMode::Type);
-                item("Bookmarks first",  GGPKExp::SortMode::Bookmarks);
+                item(I18n::TrId("sort_none"),            GGPKExp::SortMode::None);
+                item(I18n::TrId("sort_name"),            GGPKExp::SortMode::Name);
+                item(I18n::TrId("sort_size"),            GGPKExp::SortMode::Size);
+                item(I18n::TrId("sort_type"),            GGPKExp::SortMode::Type);
+                item(I18n::TrId("sort_bookmarks_first"), GGPKExp::SortMode::Bookmarks);
                 ImGui::EndPopup();
             }
         }
 
-        // Status text (Loading / Error / Not loaded) — rendered after all buttons
-        ImGui::SameLine();
+        // Status text (Loading / Error / Not loaded) — rendered after all buttons; it takes
+        // the next line when the rest of the row is too narrow for it (a translation is often
+        // longer than the English text).
+        const char* statusText = nullptr;
+        ImVec4 statusColor = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
         if (m_ggpkLoadPending) {
-            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Loading...");
+            statusText = I18n::Tr("status_loading");
+            statusColor = ImVec4(1.0f, 0.85f, 0.0f, 1.0f);
         } else if (!m_Manager.IsOpen() && !m_Manager.GetError().empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Error");
+            statusText = I18n::Tr("status_error");
+            statusColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
         } else if (!m_Manager.IsOpen()) {
-            ImGui::TextDisabled("Not loaded");
+            statusText = I18n::Tr("status_not_loaded");
+        }
+        ImGui::SameLine();
+        if (statusText) {
+            if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize(statusText).x)
+                ImGui::NewLine();
+            ImGui::TextColored(statusColor, "%s", statusText);
         }
 
         // ------------------------------------------------------------------
@@ -649,12 +758,11 @@ void GGPKExplorer::RenderMainContent() {
         if (ImGui::BeginPopupModal("##GGPKGameRunning", nullptr,
                                     ImGuiWindowFlags_AlwaysAutoResize |
                                     ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::TextWrapped(
-                "Path of Exile is currently running.\n"
-                "Close the game before loading GGPK data \xE2\x80\x94 "
-                "the file is locked while the game is running.");
+            ImGui::TextWrapped("%s", I18n::Tr("game_running_title"));
+            ImGui::TextWrapped("%s", I18n::Tr("game_running_body"));
             ImGui::Spacing();
-            if (ImGui::Button("OK", ImVec2(120, 0))) {
+            const char* okLabel = I18n::TrId("common_ok");
+            if (ImGui::Button(okLabel, ImVec2(GGPKExp::ButtonWidth(okLabel, 9.0f), 0))) {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();
@@ -785,14 +893,14 @@ void GGPKExplorer::RenderMainContent() {
             if (!openError.empty()) {
                 float centerY = winH * 0.4f;
                 ImGui::SetCursorPos(ImVec2(10.0f, centerY));
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Failed to open:");
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", I18n::Tr("open_failed"));
                 ImGui::SetCursorPosX(10.0f);
                 ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "%s", openError.c_str());
                 ImGui::Spacing();
                 ImGui::SetCursorPosX(10.0f);
-                ImGui::TextDisabled("Try opening a different .ggpk / _.index.bin file or game folder.");
+                ImGui::TextDisabled("%s", I18n::Tr("open_failed_hint"));
             } else {
-                const char* msg = "Open a .ggpk, _.index.bin or game folder to browse files";
+                const char* msg = I18n::Tr("open_hint");
                 ImVec2 textSize = ImGui::CalcTextSize(msg);
                 ImGui::SetCursorPos(ImVec2((winW - textSize.x) * 0.5f, (winH - textSize.y) * 0.5f));
                 ImGui::TextDisabled("%s", msg);
@@ -1111,7 +1219,7 @@ void GGPKExplorer::OpenGGPK(const std::string& path) {
     m_StatusBar.selectedSize = -1;
     m_StatusBar.progress.store(0.0f);
     m_StatusBar.progressActive.store(false);
-    m_StatusBar.progressLabel.clear();
+    m_StatusBar.progressLabel = {};
 
     // Open
     auto openResult = m_Manager.Open(path);
@@ -1165,7 +1273,7 @@ void GGPKExplorer::OpenGGPK(const std::string& path) {
     // Connect search system
     m_SearchDialog.SetTree(&m_Tree);
     m_SearchDialog.SetManager(&m_Manager);
-    m_SearchDialog.SetDatSchema(&m_DatSchema);
+    m_SearchDialog.SetDatSchema(CurrentDatSchema());
     m_SearchDialog.SetFileSearcher(&m_FileSearcher);
     m_SearchDialog.SetContentSearcher(&m_ContentSearcher);
     m_SearchDialog.SetDatSearcher(&m_DatSearcher);
@@ -1370,6 +1478,6 @@ extern "C" PLUGIN_API void DestroyPlugin(PluginSDK::Plugin* plugin) { delete plu
 POEFIXER_PLUGIN_INFO(
     "GGPKExplorer",
     "GGPK Explorer",
-    "1.0.2",
+    "1.0.3",
     "POEFixer",
     "Browses the game's content files: searchable file tree, viewers for tables, images, models and audio, and file extraction.")

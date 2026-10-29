@@ -1,4 +1,6 @@
 #include "ContentPanel.h"
+#include "SchemaGate.h"
+#include "UiText.h"
 #include "../core/TextEncoding.h"
 #include "../viewers/HexViewer.h"
 #include "../viewers/TextViewer.h"
@@ -198,12 +200,28 @@ void ContentPanel::SetPluginDir(const std::string& dir)
 
 void ContentPanel::SetDatSchema(DatSchema* schema)
 {
+    const bool changed = schema != m_schema;
     m_schema = schema;
-    // Forward to AocViewer if it exists (otherwise InitViewers picks up the
-    // cached m_schema pointer on first lazy-init).
+    // Forward to the viewers that exist (otherwise InitViewers picks up the
+    // cached m_schema pointer on first lazy-init). A replaced schema stays
+    // alive (GGPKExplorer keeps every one), so a viewer's or a worker's table
+    // from the old one stays valid until it reloads.
     if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc))) {
         av->SetDatSchema(m_schema);
     }
+    if (auto* pv = dynamic_cast<PsgViewer*>(GetViewer(FileType::SkillTree))) {
+        pv->SetContext(m_manager, m_schema, m_device, m_taskRunner);
+    }
+    DatViewer* dv = GetDatViewer();
+    if (dv) dv->SetSchema(m_schema);
+    // Reopen what is on screen with the new schema: the table (unless it holds edits) and the
+    // Skill Tree, which reads Stats and PassiveSkills through it and stays failed otherwise.
+    if (changed) SchemaGate::OnSchemaChanged(m_viewerLoaded, dv && dv->HasPendingEdits());
+}
+
+bool ContentPanel::SchemaReady() const
+{
+    return m_schema && m_schema->IsLoaded();
 }
 
 void ContentPanel::SetFA6Available(bool available)
@@ -363,6 +381,7 @@ void ContentPanel::DoLoadFile(const std::string& path, const std::string& name,
     m_fileData.clear();
     m_dataLoaded = false;
     m_loadError.clear();
+    m_loadErrorKey = nullptr;
 
     // Reset all per-viewer loaded flags
     m_viewerLoaded.clear();
@@ -425,6 +444,7 @@ void ContentPanel::Clear()
     m_defaultTab = DefaultTab::None;
     m_tabSelectionApplied = false;
     m_loadError.clear();
+    m_loadErrorKey = nullptr;
     m_properties  = FileProperties{};
     pendingNavigatePath.clear();
     pendingNavigateRow = -1;
@@ -450,7 +470,7 @@ void ContentPanel::EnsureDataLoaded()
         return;
 
     if (!m_manager || !m_currentNodePtr) {
-        m_loadError  = "No file data available";
+        SetOwnLoadError(I18n::Key("content_no_file_data"));
         m_dataLoaded = true;
         return;
     }
@@ -464,7 +484,7 @@ void ContentPanel::EnsureDataLoaded()
     } else {
         m_fileData = std::move(readResult.value);
         if (m_fileData.empty() && m_currentSize > 0)
-            m_loadError = "Failed to decompress file";
+            SetOwnLoadError(I18n::Key("content_decompress_failed"));
         // size==0 is a legitimately empty file — no error
     }
 
@@ -482,10 +502,12 @@ void ContentPanel::Render()
         const float winW = ImGui::GetContentRegionAvail().x;
         const float winH = ImGui::GetContentRegionAvail().y;
 
-        const float kColW   = 320.0f;
-        const float kColGap = 24.0f;
+        // Sizes in em: the translated texts wrap inside their columns.
+        const float em      = ImGui::GetFontSize();
+        const float kColW   = em * 24.0f;
+        const float kColGap = em * 2.0f;
         const float kPanelW = kColW * 2.0f + kColGap;
-        const float kPanelH = 720.0f;
+        const float kPanelH = em * 55.0f;
 
         float panelX = (winW - kPanelW) * 0.5f;
         float panelY = (winH - kPanelH) * 0.5f;
@@ -500,72 +522,77 @@ void ContentPanel::Render()
         if (ImGui::BeginTable("##welcomecols", 2,
                               ImGuiTableFlags_SizingFixedFit
                               | ImGuiTableFlags_NoBordersInBody)) {
-            ImGui::TableSetupColumn("Hotkeys", ImGuiTableColumnFlags_WidthFixed, kColW);
-            ImGui::TableSetupColumn("Formats", ImGuiTableColumnFlags_WidthFixed, kColW);
+            ImGui::TableSetupColumn("##hotkeys", ImGuiTableColumnFlags_WidthFixed, kColW);
+            ImGui::TableSetupColumn("##formats", ImGuiTableColumnFlags_WidthFixed, kColW);
             ImGui::TableNextRow();
 
             // --- Column 1: Keyboard Shortcuts ---
             ImGui::TableNextColumn();
             {
-                const char* title = "Keyboard Shortcuts";
+                const char* title = I18n::Tr("welcome_shortcuts_title");
                 const ImVec2 titleSize = ImGui::CalcTextSize(title);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX()
-                                     + (kColW - titleSize.x) * 0.5f);
+                if (titleSize.x < kColW)
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX()
+                                         + (kColW - titleSize.x) * 0.5f);
                 ImGui::TextDisabled("%s", title);
                 ImGui::Spacing();
 
+                // Each row: the key chord (code, or a translated text) and its translated action.
                 auto renderGroup = [&](const char* groupName,
                     std::initializer_list<std::pair<const char*, const char*>> items) {
                     ImGui::SeparatorText(groupName);
                     if (ImGui::BeginTable("##hk_tbl", 2,
                                           ImGuiTableFlags_None,
                                           ImVec2(kColW, 0))) {
-                        ImGui::TableSetupColumn("K", ImGuiTableColumnFlags_WidthFixed, 140.0f);
-                        ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
+                        ImGui::TableSetupColumn("##key", ImGuiTableColumnFlags_WidthFixed, em * 8.5f);
+                        ImGui::TableSetupColumn("##action", ImGuiTableColumnFlags_WidthStretch);
                         for (auto& [key, action] : items) {
                             ImGui::TableNextRow();
                             ImGui::TableNextColumn();
                             ImGui::TextDisabled("%s", key);
                             ImGui::TableNextColumn();
-                            ImGui::Text("%s", action);
+                            ImGui::TextWrapped("%s", action);
                         }
                         ImGui::EndTable();
                     }
                 };
 
-                renderGroup("Navigation", {
-                    {"Ctrl+P",      "Quick Jump"},
-                    {"Alt+\xe2\x86\x90",  "Navigate Back"},
-                    {"Alt+\xe2\x86\x92",  "Navigate Forward"},
-                    {"Ctrl+Click",  "Follow file path link"},
+                renderGroup(I18n::Tr("welcome_group_navigation"), {
+                    {"Ctrl+P",                          I18n::Tr("hotkey_quick_jump")},
+                    {"Alt+\xe2\x86\x90",                I18n::Tr("hotkey_navigate_back")},
+                    {"Alt+\xe2\x86\x92",                I18n::Tr("hotkey_navigate_forward")},
+                    {I18n::Tr("hotkey_ctrl_click"),     I18n::Tr("hotkey_follow_link")},
                 });
-                renderGroup("Search", {
-                    {"Ctrl+F",       "Find in file/folder"},
-                    {"Ctrl+R",       "Replace in files"},
-                    {"Ctrl+Shift+F", "Global search"},
+                renderGroup(I18n::Tr("welcome_group_search"), {
+                    {"Ctrl+F",       I18n::Tr("hotkey_find_in_scope")},
+                    {"Ctrl+R",       I18n::Tr("hotkey_replace_in_files")},
+                    {"Ctrl+Shift+F", I18n::Tr("hotkey_global_search")},
                 });
-                renderGroup("File Operations", {
-                    {"Ctrl+D", "Toggle bookmark"},
-                    {"F5",     "Reload GGPK"},
-                    {"Escape", "Close dialog"},
+                renderGroup(I18n::Tr("welcome_group_file_operations"), {
+                    {"Ctrl+D", I18n::Tr("hotkey_toggle_bookmark")},
+                    {"F5",     I18n::Tr("hotkey_reload")},
+                    {"Escape", I18n::Tr("hotkey_close_dialog")},
                 });
             }
 
             // --- Column 2: File Formats ---
             ImGui::TableNextColumn();
             {
-                const char* title = "File Formats";
+                const char* title = I18n::Tr("welcome_formats_title");
                 const ImVec2 titleSize = ImGui::CalcTextSize(title);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX()
-                                     + (kColW - titleSize.x) * 0.5f);
+                if (titleSize.x < kColW)
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX()
+                                         + (kColW - titleSize.x) * 0.5f);
                 ImGui::TextDisabled("%s", title);
                 ImGui::Spacing();
 
+                // Rows hold keys (I18n::Key), looked up when drawn.
                 struct FmtRow {
                     const char* icon;   // UTF-8 glyph from Font Awesome atlas
-                    const char* ext;
+                    const char* ext;    // an extension list, or a key when extIsKey
+                    bool        extIsKey;
                     ImVec4      color;  // alpha > 0 => use color; else default text
-                    const char* desc;
+                    const char* descKey;
                 };
                 auto renderFmtGroup = [&](const char* groupName,
                                            const FmtRow* rows, size_t count) {
@@ -573,46 +600,49 @@ void ContentPanel::Render()
                     if (ImGui::BeginTable("##fmt_tbl", 3,
                                           ImGuiTableFlags_None,
                                           ImVec2(kColW, 0))) {
-                        ImGui::TableSetupColumn("I", ImGuiTableColumnFlags_WidthFixed, 26.0f);
-                        ImGui::TableSetupColumn("E", ImGuiTableColumnFlags_WidthFixed, 108.0f);
-                        ImGui::TableSetupColumn("D", ImGuiTableColumnFlags_WidthStretch);
+                        ImGui::TableSetupColumn("##icon", ImGuiTableColumnFlags_WidthFixed, em * 2.0f);
+                        ImGui::TableSetupColumn("##ext", ImGuiTableColumnFlags_WidthFixed, em * 8.5f);
+                        ImGui::TableSetupColumn("##desc", ImGuiTableColumnFlags_WidthStretch);
                         for (size_t i = 0; i < count; ++i) {
                             const auto& r = rows[i];
+                            const char* ext = r.extIsKey ? I18n::Tr(r.ext) : r.ext;
                             ImGui::TableNextRow();
                             ImGui::TableNextColumn();
                             if (r.color.w > 0.0f) ImGui::TextColored(r.color, "%s", r.icon);
                             else                  ImGui::Text("%s", r.icon);
                             ImGui::TableNextColumn();
-                            if (r.color.w > 0.0f) ImGui::TextColored(r.color, "%s", r.ext);
-                            else                  ImGui::Text("%s", r.ext);
+                            if (r.color.w > 0.0f) ImGui::TextColored(r.color, "%s", ext);
+                            else                  ImGui::Text("%s", ext);
                             ImGui::TableNextColumn();
-                            ImGui::TextDisabled("%s", r.desc);
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                            ImGui::TextWrapped("%s", I18n::Tr(r.descKey));
+                            ImGui::PopStyleColor();
                         }
                         ImGui::EndTable();
                     }
                 };
 
                 static const FmtRow kCore[] = {
-                    {"\xef\x84\xae", ".aoc",         ImVec4(0.95f, 0.55f, 0.75f, 1.0f), "Animated composition"},
-                    {"\xef\x86\xb2", ".sm",          ImVec4(0.75f, 0.65f, 0.95f, 1.0f), "3D model"},
-                    {"\xef\x83\xa8", ".psg",         ImVec4(0.70f, 0.85f, 0.55f, 1.0f), "Passive skill tree"},
-                    {"\xef\x86\xb2", ".smd",         ImVec4(0.55f, 0.80f, 0.95f, 1.0f), "Mesh data"},
-                    {"\xef\x97\x97", ".ast",         ImVec4(0.95f, 0.80f, 0.50f, 1.0f), "Animation skeleton"},
-                    {"\xef\x83\x8e", ".dat/.datc64", ImVec4(0.50f, 0.75f, 0.90f, 1.0f), "Data tables"},
+                    {"\xef\x84\xae", ".aoc",         false, ImVec4(0.95f, 0.55f, 0.75f, 1.0f), I18n::Key("format_aoc")},
+                    {"\xef\x86\xb2", ".sm",          false, ImVec4(0.75f, 0.65f, 0.95f, 1.0f), I18n::Key("format_sm")},
+                    {"\xef\x83\xa8", ".psg",         false, ImVec4(0.70f, 0.85f, 0.55f, 1.0f), I18n::Key("format_psg")},
+                    {"\xef\x86\xb2", ".smd",         false, ImVec4(0.55f, 0.80f, 0.95f, 1.0f), I18n::Key("format_smd")},
+                    {"\xef\x97\x97", ".ast",         false, ImVec4(0.95f, 0.80f, 0.50f, 1.0f), I18n::Key("format_ast")},
+                    {"\xef\x83\x8e", ".dat/.datc64", false, ImVec4(0.50f, 0.75f, 0.90f, 1.0f), I18n::Key("format_dat")},
                 };
                 static const FmtRow kViewers[] = {
-                    {"\xef\x89\xb9", ".amd",        ImVec4(0, 0, 0, 0), "Animation metadata"},
-                    {"\xef\x89\xb9", ".mtp",        ImVec4(0, 0, 0, 0), "Terrain metadata"},
-                    {"\xef\x80\x8a", ".tdt",        ImVec4(0, 0, 0, 0), "Terrain data"},
-                    {"\xef\x87\x85", ".dds/.png",   ImVec4(0, 0, 0, 0), "Image files"},
-                    {"\xef\x87\x87", ".ogg/.wav",   ImVec4(0, 0, 0, 0), "Audio files"},
-                    {"\xef\x80\x93", ".fx/.hlsl",   ImVec4(0, 0, 0, 0), "Shader source"},
-                    {"\xef\x85\x9c", ".txt/.json",  ImVec4(0, 0, 0, 0), "Text files"},
-                    {"\xef\x85\x9b", "binary",      ImVec4(0, 0, 0, 0), "Hex fallback"},
+                    {"\xef\x89\xb9", ".amd",       false, ImVec4(0, 0, 0, 0), I18n::Key("format_amd")},
+                    {"\xef\x89\xb9", ".mtp",       false, ImVec4(0, 0, 0, 0), I18n::Key("format_mtp")},
+                    {"\xef\x80\x8a", ".tdt",       false, ImVec4(0, 0, 0, 0), I18n::Key("format_tdt")},
+                    {"\xef\x87\x85", ".dds/.png",  false, ImVec4(0, 0, 0, 0), I18n::Key("format_image")},
+                    {"\xef\x87\x87", ".ogg/.wav",  false, ImVec4(0, 0, 0, 0), I18n::Key("format_audio")},
+                    {"\xef\x80\x93", ".fx/.hlsl",  false, ImVec4(0, 0, 0, 0), I18n::Key("format_shader")},
+                    {"\xef\x85\x9c", ".txt/.json", false, ImVec4(0, 0, 0, 0), I18n::Key("format_text")},
+                    {"\xef\x85\x9b", I18n::Key("format_binary_ext"), true, ImVec4(0, 0, 0, 0), I18n::Key("format_binary")},
                 };
 
-                renderFmtGroup("Core", kCore, sizeof(kCore) / sizeof(kCore[0]));
-                renderFmtGroup("Viewers", kViewers, sizeof(kViewers) / sizeof(kViewers[0]));
+                renderFmtGroup(I18n::Tr("welcome_group_core"), kCore, sizeof(kCore) / sizeof(kCore[0]));
+                renderFmtGroup(I18n::Tr("welcome_group_viewers"), kViewers, sizeof(kViewers) / sizeof(kViewers[0]));
             }
 
             ImGui::EndTable();
@@ -708,16 +738,23 @@ void ContentPanel::Render()
     }
 
     // Unsaved changes prompt
+    const char* savePromptTitle = I18n::TrId("unsaved_title");
     if (m_showSavePrompt) {
-        ImGui::OpenPopup("Unsaved Changes");
+        ImGui::OpenPopup(savePromptTitle);
         m_showSavePrompt = false;
     }
 
-    if (ImGui::BeginPopupModal("Unsaved Changes", nullptr,
+    if (ImGui::BeginPopupModal(savePromptTitle, nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-        ImGui::Text("Unsaved changes in %s", m_currentName.c_str());
+        ImGui::TextUnformatted(I18n::TrF("unsaved_body", { { "name", m_currentName } }).c_str());
         ImGui::Spacing();
-        if (ImGui::Button("Save", ImVec2(120, 0))) {
+        const char* saveLabel = I18n::TrId("unsaved_save");
+        const char* discardLabel = I18n::TrId("unsaved_discard");
+        const char* cancelLabel = I18n::TrId("common_cancel");
+        float promptBtnW = ButtonWidth(saveLabel, 9.0f);
+        if (ButtonWidth(discardLabel, 9.0f) > promptBtnW) promptBtnW = ButtonWidth(discardLabel, 9.0f);
+        if (ButtonWidth(cancelLabel, 9.0f) > promptBtnW) promptBtnW = ButtonWidth(cancelLabel, 9.0f);
+        if (ImGui::Button(saveLabel, ImVec2(promptBtnW, 0))) {
             if (auto* tv = GetTextViewer()) {
                 if (tv->HasUnsavedChanges() && m_manager && m_currentNodePtr) {
                     auto text = tv->GetText();
@@ -729,16 +766,23 @@ void ContentPanel::Render()
             DoLoadFile(m_pendingPath, m_pendingName, m_pendingSize, m_pendingType, m_pendingNodePtr);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Discard", ImVec2(120, 0))) {
+        if (ImGui::Button(discardLabel, ImVec2(promptBtnW, 0))) {
             ImGui::CloseCurrentPopup();
             DoLoadFile(m_pendingPath, m_pendingName, m_pendingSize, m_pendingType, m_pendingNodePtr);
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        if (ImGui::Button(cancelLabel, ImVec2(promptBtnW, 0))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
+
+    // The load error line: our own message (a key) or the reader's English detail.
+    auto showLoadError = [this]() {
+        const std::string detail = m_loadErrorKey ? std::string(I18n::Tr(m_loadErrorKey)) : m_loadError;
+        ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s",
+                           I18n::TrF("error_detail", { { "detail", detail } }).c_str());
+    };
 
     if (!ImGui::BeginTabBar("##ContentTabs"))
         return;
@@ -767,7 +811,7 @@ void ContentPanel::Render()
                 m_viewerLoaded[FileType::Aoc] = true;
             }
             if (!m_loadError.empty())
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             else {
                 if (auto* v = GetViewer(FileType::Aoc)) {
                     v->Render();
@@ -781,7 +825,7 @@ void ContentPanel::Render()
     // Text tab — for Text/Shader types and heuristic-detected text files
     // ------------------------------------------------------------------
     if (showTextTab) {
-        if (ImGui::BeginTabItem("Text", nullptr, textTabFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("tab_text"), nullptr, textTabFlags)) {
             if (!m_viewerLoaded[FileType::Text]) {
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
@@ -812,7 +856,7 @@ void ContentPanel::Render()
                                 }
                             });
                         } catch (...) {
-                            m_loadError = "Failed to load text: file too large or encoding error";
+                            SetOwnLoadError(I18n::Key("content_text_load_failed"));
                         }
                     }
                 }
@@ -825,7 +869,7 @@ void ContentPanel::Render()
                 }
             }
             if (!m_loadError.empty()) {
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             } else {
                 if (auto* tv = GetTextViewer()) {
                     tv->Render();
@@ -844,7 +888,7 @@ void ContentPanel::Render()
     // Image tab
     // ------------------------------------------------------------------
     if (showImageTab) {
-        if (ImGui::BeginTabItem("Image", nullptr, imageTabFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("tab_image"), nullptr, imageTabFlags)) {
             if (!m_viewerLoaded[FileType::Image]) {
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
@@ -854,7 +898,7 @@ void ContentPanel::Render()
                 m_viewerLoaded[FileType::Image] = true;
             }
             if (!m_loadError.empty()) {
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             } else {
                 if (auto* v = GetViewer(FileType::Image))
                     v->Render();
@@ -868,36 +912,41 @@ void ContentPanel::Render()
     // ------------------------------------------------------------------
     if (showDatTab) {
         if (ImGui::BeginTabItem("DAT", nullptr, datTabFlags)) {
-            if (!m_viewerLoaded[FileType::Dat]) {
-                EnsureDataLoaded();
-                if (m_loadError.empty()) {
-                    if (auto* dv = GetDatViewer()) {
-                        dv->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
-                        dv->SetOnSave([this](const std::vector<uint8_t>& data) {
-                            if (m_manager && m_currentNodePtr) {
-                                m_manager->WriteFile(m_currentNodePtr, data);
-                            }
-                        });
+            if (!SchemaReady()) {
+                // The table waits for its schema (game data the host may still be downloading).
+                SchemaNotReadyLine(m_schema ? m_schema->GetError() : std::string());
+            } else {
+                if (!m_viewerLoaded[FileType::Dat]) {
+                    EnsureDataLoaded();
+                    if (m_loadError.empty()) {
+                        if (auto* dv = GetDatViewer()) {
+                            dv->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
+                            dv->SetOnSave([this](const std::vector<uint8_t>& data) {
+                                if (m_manager && m_currentNodePtr) {
+                                    m_manager->WriteFile(m_currentNodePtr, data);
+                                }
+                            });
+                        }
+                    }
+                    m_viewerLoaded[FileType::Dat] = true;
+                    // Apply deferred scroll now that data is loaded
+                    if (m_deferredScrollRow >= 0) {
+                        if (auto* dv = GetDatViewer())
+                            dv->ScrollToRow(m_deferredScrollRow);
+                        m_deferredScrollRow = -1;
                     }
                 }
-                m_viewerLoaded[FileType::Dat] = true;
-                // Apply deferred scroll now that data is loaded
-                if (m_deferredScrollRow >= 0) {
-                    if (auto* dv = GetDatViewer())
-                        dv->ScrollToRow(m_deferredScrollRow);
-                    m_deferredScrollRow = -1;
-                }
-            }
-            if (!m_loadError.empty()) {
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
-            } else {
-                if (auto* dv = GetDatViewer()) {
-                    dv->Render();
+                if (!m_loadError.empty()) {
+                    showLoadError();
+                } else {
+                    if (auto* dv = GetDatViewer()) {
+                        dv->Render();
 
-                    // Transfer foreign key navigation from DatViewer to ContentPanel
-                    if (dv->HasPendingNavigation()) {
-                        pendingNavigatePath = dv->TakePendingNavigation();
-                        pendingNavigateRow = dv->TakePendingNavRow();
+                        // Transfer foreign key navigation from DatViewer to ContentPanel
+                        if (dv->HasPendingNavigation()) {
+                            pendingNavigatePath = dv->TakePendingNavigation();
+                            pendingNavigateRow = dv->TakePendingNavRow();
+                        }
                     }
                 }
             }
@@ -909,20 +958,24 @@ void ContentPanel::Render()
     // Schema tab (for .datc64 files — shows type definition)
     // ------------------------------------------------------------------
     if (showDatTab) {
-        if (ImGui::BeginTabItem("Schema")) {
-            if (!m_viewerLoaded[FileType::Dat]) {
-                EnsureDataLoaded();
-                if (m_loadError.empty()) {
-                    if (auto* v = GetViewer(FileType::Dat))
-                        v->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
-                }
-                m_viewerLoaded[FileType::Dat] = true;
-            }
-            if (!m_loadError.empty()) {
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+        if (ImGui::BeginTabItem(I18n::TrId("tab_schema"))) {
+            if (!SchemaReady()) {
+                SchemaNotReadyLine(m_schema ? m_schema->GetError() : std::string());
             } else {
-                if (auto* dv = GetDatViewer())
-                    dv->RenderSchemaTab();
+                if (!m_viewerLoaded[FileType::Dat]) {
+                    EnsureDataLoaded();
+                    if (m_loadError.empty()) {
+                        if (auto* v = GetViewer(FileType::Dat))
+                            v->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
+                    }
+                    m_viewerLoaded[FileType::Dat] = true;
+                }
+                if (!m_loadError.empty()) {
+                    showLoadError();
+                } else {
+                    if (auto* dv = GetDatViewer())
+                        dv->RenderSchemaTab();
+                }
             }
             ImGui::EndTabItem();
         }
@@ -932,7 +985,7 @@ void ContentPanel::Render()
     // Audio tab
     // ------------------------------------------------------------------
     if (showAudioTab) {
-        if (ImGui::BeginTabItem("Audio", nullptr, audioTabFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("tab_audio"), nullptr, audioTabFlags)) {
             if (!m_viewerLoaded[FileType::Audio]) {
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
@@ -942,7 +995,7 @@ void ContentPanel::Render()
                 m_viewerLoaded[FileType::Audio] = true;
             }
             if (!m_loadError.empty()) {
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             } else {
                 if (auto* v = GetViewer(FileType::Audio))
                     v->Render();
@@ -955,7 +1008,7 @@ void ContentPanel::Render()
     // Model tab (meshes + skeletons) — MeshViewer via IViewer map
     // ------------------------------------------------------------------
     if (showMeshTab) {
-        if (ImGui::BeginTabItem("Model", nullptr, meshTabFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("tab_model"), nullptr, meshTabFlags)) {
             if (!m_viewerLoaded[FileType::Mesh]) {
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
@@ -968,7 +1021,7 @@ void ContentPanel::Render()
                 m_viewerLoaded[FileType::Mesh] = true;
             }
             if (!m_loadError.empty())
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             else {
                 if (auto* v = GetViewer(FileType::Mesh))
                     v->Render();
@@ -981,7 +1034,7 @@ void ContentPanel::Render()
     // Terrain Data tab
     // ------------------------------------------------------------------
     if (showTerrainTab) {
-        if (ImGui::BeginTabItem("Terrain", nullptr, terrainTabFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("tab_terrain"), nullptr, terrainTabFlags)) {
             if (!m_viewerLoaded[FileType::Terrain]) {
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
@@ -991,7 +1044,7 @@ void ContentPanel::Render()
                 m_viewerLoaded[FileType::Terrain] = true;
             }
             if (!m_loadError.empty())
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             else {
                 if (auto* v = GetViewer(FileType::Terrain)) {
                     v->Render();
@@ -1009,7 +1062,7 @@ void ContentPanel::Render()
     // Terrain Metadata tab
     // ------------------------------------------------------------------
     if (showTerrainMetaTab) {
-        if (ImGui::BeginTabItem("Metadata", nullptr, terrainMetaTabFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("tab_metadata"), nullptr, terrainMetaTabFlags)) {
             if (!m_viewerLoaded[FileType::TerrainMeta]) {
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
@@ -1019,7 +1072,7 @@ void ContentPanel::Render()
                 m_viewerLoaded[FileType::TerrainMeta] = true;
             }
             if (!m_loadError.empty())
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             else {
                 if (auto* v = GetViewer(FileType::TerrainMeta)) {
                     v->Render();
@@ -1037,7 +1090,7 @@ void ContentPanel::Render()
     // Material Table tab
     // ------------------------------------------------------------------
     if (showMatTableTab) {
-        if (ImGui::BeginTabItem("Materials", nullptr, matTableTabFlags)) {
+        if (ImGui::BeginTabItem(I18n::TrId("tab_materials"), nullptr, matTableTabFlags)) {
             if (!m_viewerLoaded[FileType::MatTable]) {
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
@@ -1047,7 +1100,7 @@ void ContentPanel::Render()
                 m_viewerLoaded[FileType::MatTable] = true;
             }
             if (!m_loadError.empty())
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+                showLoadError();
             else {
                 if (auto* v = GetViewer(FileType::MatTable))
                     v->Render();
@@ -1060,40 +1113,50 @@ void ContentPanel::Render()
     // Skill Tree tab (Visual) + sibling Metadata tab for PSG files
     // ------------------------------------------------------------------
     if (showSkillTreeTab) {
-        if (ImGui::BeginTabItem("Skill Tree", nullptr, skillTreeTabFlags)) {
-            if (!m_viewerLoaded[FileType::SkillTree]) {
-                EnsureDataLoaded();
-                if (m_loadError.empty()) {
-                    if (auto* v = GetViewer(FileType::SkillTree))
-                        v->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
+        // Both tabs read Stats and PassiveSkills through the schema: they wait for it (game data
+        // the host may still be downloading) and load once it is there (SetDatSchema reopens them).
+        if (ImGui::BeginTabItem(I18n::TrId("tab_skill_tree"), nullptr, skillTreeTabFlags)) {
+            if (!SchemaReady()) {
+                SchemaNotReadyLine(m_schema ? m_schema->GetError() : std::string());
+            } else {
+                if (!m_viewerLoaded[FileType::SkillTree]) {
+                    EnsureDataLoaded();
+                    if (m_loadError.empty()) {
+                        if (auto* v = GetViewer(FileType::SkillTree))
+                            v->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
+                    }
+                    m_viewerLoaded[FileType::SkillTree] = true;
                 }
-                m_viewerLoaded[FileType::SkillTree] = true;
-            }
-            if (!m_loadError.empty())
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
-            else {
-                if (auto* v = GetViewer(FileType::SkillTree)) {
-                    if (auto* psg = dynamic_cast<PsgViewer*>(v)) psg->RenderVisual();
-                    else v->Render();
+                if (!m_loadError.empty())
+                    showLoadError();
+                else {
+                    if (auto* v = GetViewer(FileType::SkillTree)) {
+                        if (auto* psg = dynamic_cast<PsgViewer*>(v)) psg->RenderVisual();
+                        else v->Render();
+                    }
                 }
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Metadata")) {
-            // Shares the Skill Tree load flag — no separate EnsureDataLoaded.
-            if (!m_viewerLoaded[FileType::SkillTree]) {
-                EnsureDataLoaded();
-                if (m_loadError.empty()) {
-                    if (auto* v = GetViewer(FileType::SkillTree))
-                        v->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
+        if (ImGui::BeginTabItem(I18n::TrId("tab_metadata"))) {
+            if (!SchemaReady()) {
+                SchemaNotReadyLine(m_schema ? m_schema->GetError() : std::string());
+            } else {
+                // Shares the Skill Tree load flag — no separate EnsureDataLoaded.
+                if (!m_viewerLoaded[FileType::SkillTree]) {
+                    EnsureDataLoaded();
+                    if (m_loadError.empty()) {
+                        if (auto* v = GetViewer(FileType::SkillTree))
+                            v->LoadData(std::vector<uint8_t>(m_fileData), m_currentName);
+                    }
+                    m_viewerLoaded[FileType::SkillTree] = true;
                 }
-                m_viewerLoaded[FileType::SkillTree] = true;
-            }
-            if (!m_loadError.empty())
-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
-            else {
-                if (auto* v = GetViewer(FileType::SkillTree)) {
-                    if (auto* psg = dynamic_cast<PsgViewer*>(v)) psg->RenderMetadata();
+                if (!m_loadError.empty())
+                    showLoadError();
+                else {
+                    if (auto* v = GetViewer(FileType::SkillTree)) {
+                        if (auto* psg = dynamic_cast<PsgViewer*>(v)) psg->RenderMetadata();
+                    }
                 }
             }
             ImGui::EndTabItem();
@@ -1103,10 +1166,10 @@ void ContentPanel::Render()
     // ------------------------------------------------------------------
     // Hex tab — always present
     // ------------------------------------------------------------------
-    if (ImGui::BeginTabItem("Hex", nullptr, hexTabFlags)) {
+    if (ImGui::BeginTabItem(I18n::TrId("tab_hex"), nullptr, hexTabFlags)) {
         EnsureDataLoaded();
         if (!m_loadError.empty()) {
-            ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Error: %s", m_loadError.c_str());
+            showLoadError();
         } else {
             if (auto* hexV = GetViewer(FileType::Binary)) {
                 if (!hexV->IsLoaded()) {
@@ -1121,7 +1184,7 @@ void ContentPanel::Render()
     // ------------------------------------------------------------------
     // Properties tab — always present
     // ------------------------------------------------------------------
-    if (ImGui::BeginTabItem("Properties")) {
+    if (ImGui::BeginTabItem(I18n::TrId("tab_properties"))) {
         RenderPropertiesViewer(m_properties);
         ImGui::EndTabItem();
     }
@@ -1145,9 +1208,10 @@ void ContentPanel::Render()
             ImVec2 p(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
             drawList->AddCircleFilled(p, 3.0f, IM_COL32(255, 255, 255, (int)(alpha * 255)));
         }
-        ImVec2 textSize = ImGui::CalcTextSize("Loading...");
+        const char* loadingText = I18n::Tr("status_loading");
+        ImVec2 textSize = ImGui::CalcTextSize(loadingText);
         drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y + radius + 10.0f),
-            IM_COL32(255, 255, 255, 255), "Loading...");
+            IM_COL32(255, 255, 255, 255), loadingText);
     }
 }
 

@@ -1,7 +1,7 @@
 // Plugins/GGPKExplorer/ui/SearchResultsPanel.h
 #pragma once
 #include "../core/SearchTypes.h"
-#include "StatusBar.h"  // FormatSize
+#include "UiText.h"     // SizeText, translated texts
 #include <string>
 #include <vector>
 #include <functional>
@@ -36,7 +36,10 @@ private:
     Mode m_mode = Mode::None;
     SearchResult m_result;
     std::vector<ReplaceResult> m_replaceLog;
-    std::string m_headerText;
+    // The header's two counts, drawn in the program language by Render (per mode: files and
+    // folders found, matches and files searched, occurrences and files replaced).
+    int m_headerFirst = 0;
+    int m_headerSecond = 0;
 
     // Expand/Collapse all (one-shot flags)
     int m_forceExpandState = 0;  // 0=none, 1=expand all, -1=collapse all

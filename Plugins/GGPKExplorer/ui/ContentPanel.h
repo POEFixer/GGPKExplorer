@@ -96,7 +96,11 @@ private:
 
     std::vector<uint8_t> m_fileData;
     bool m_dataLoaded = false;
-    std::string m_loadError;
+    std::string m_loadError;              // non-empty = failed: the reader's (English) detail
+    const char* m_loadErrorKey = nullptr; // our own message instead: a lang/ key, drawn translated
+
+    // Fails the load with our own message (m_loadError holds the key, so it reads as failed).
+    void SetOwnLoadError(const char* key) { m_loadErrorKey = key; m_loadError = key; }
 
     // Phase 4 — stashed previous file (mesh/aoc only) for AocViewer attach flow
     std::string          m_previousPath;
@@ -153,6 +157,8 @@ private:
 
     void EnsureDataLoaded();
     void InitViewers();
+    // The DAT schema is loaded (game data the host may still be downloading).
+    bool SchemaReady() const;
 
     // Typed accessors for viewers with extra methods beyond IViewer
     TextViewer* GetTextViewer();

@@ -8,6 +8,7 @@
 #include "../core/GGPKManager.h"
 #include "../core/DatSchema.h"
 #include "../../lib/json.hpp"
+#include "UiText.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -66,7 +67,6 @@ private:
     ContentSearcher* m_contentSearcher = nullptr;
     DatSearcher* m_datSearcher = nullptr;
     std::vector<std::string> m_scopePaths;
-    std::string m_scopeLabel;  // Display label: "Scope: filename" or "Scope: folder/"
     bool m_isScopedSearch = false;  // true when opened via Ctrl+F/R with specific scope
 
     // Callbacks
@@ -130,15 +130,15 @@ private:
                         int& outLine, int& outCol);
     void CollectTextFiles(const std::string& folderPath, std::vector<std::string>& out);
 
-    // Filter presets
-    struct FilterPreset { const char* name; const char* value; };
+    // Filter presets: the name is a lang/ key, looked up when drawn.
+    struct FilterPreset { const char* nameKey; const char* value; };
     static constexpr FilterPreset FILTER_PRESETS[] = {
-        {"All files", "*.*"},
-        {"All text + datc64", "*.txt *.json *.xml *.cfg *.csv *.datc64 *.shader *.hlsl *.glsl *.lua *.ini *.csd"},
-        {"Text only", "*.txt *.json *.xml *.cfg *.csv *.ini"},
-        {"Data files", "*.datc64 *.dat"},
-        {"Shaders", "*.shader *.hlsl *.glsl"},
-        {"Custom...", ""},
+        {I18n::Key("search_preset_all_files"), "*.*"},
+        {I18n::Key("search_preset_text_and_datc64"), "*.txt *.json *.xml *.cfg *.csv *.datc64 *.shader *.hlsl *.glsl *.lua *.ini *.csd"},
+        {I18n::Key("search_preset_text_only"), "*.txt *.json *.xml *.cfg *.csv *.ini"},
+        {I18n::Key("search_preset_data_files"), "*.datc64 *.dat"},
+        {I18n::Key("search_preset_shaders"), "*.shader *.hlsl *.glsl"},
+        {I18n::Key("search_preset_custom"), ""},
     };
     static constexpr int PRESET_COUNT = 6;
 

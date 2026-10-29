@@ -1,6 +1,6 @@
 // Plugins/GGPKExplorer/ui/TreePanel.cpp
 #include "TreePanel.h"
-#include "StatusBar.h"   // FormatSize
+#include "UiText.h"      // SizeText, translated labels
 #include <imgui.h>
 #include <cstdio>
 #include <cctype>
@@ -25,6 +25,14 @@ static const char* GetBookmarkIconStr(int index) {
     if (index >= 0 && index < kBookmarkIconCount)
         return kBookmarkIcons[index];
     return "";
+}
+
+// A dimmed note that wraps inside the tree column: the column can be narrow, and a
+// translation is often longer than the English text.
+static void DisabledWrapped(const char* text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
 }
 
 namespace GGPKExp {
@@ -156,7 +164,7 @@ void TreePanel::RevealSelected() {
 void TreePanel::Render(float width) {
     if (!m_tree) {
         ImGui::BeginChild("##GGPKTree", ImVec2(width, 0), ImGuiChildFlags_Borders);
-        ImGui::TextDisabled("No data loaded");
+        DisabledWrapped(I18n::Tr("tree_no_data"));
         ImGui::EndChild();
         return;
     }
@@ -167,7 +175,7 @@ void TreePanel::Render(float width) {
     ImGui::BeginChild("##GGPKTree", ImVec2(width, 0), ImGuiChildFlags_Borders);
 
     if (itemCount == 0) {
-        ImGui::TextDisabled("Empty tree");
+        DisabledWrapped(I18n::Tr("tree_empty"));
         ImGui::EndChild();
         return;
     }
@@ -224,9 +232,8 @@ void TreePanel::Render(float width) {
             } else {
                 const char* icon = extApp.icon ? extApp.icon : GetFileTypeIcon(entry.type);
                 if (entry.fileSize >= 0) {
-                    char sizeBuf[64];
-                    FormatSize(entry.fileSize, sizeBuf, sizeof(sizeBuf));
-                    snprintf(label, sizeof(label), "%s%s%s (%s)", bmPrefix, icon, entry.name.c_str(), sizeBuf);
+                    const std::string sizeText = SizeText(entry.fileSize);
+                    snprintf(label, sizeof(label), "%s%s%s (%s)", bmPrefix, icon, entry.name.c_str(), sizeText.c_str());
                 } else {
                     snprintf(label, sizeof(label), "%s%s%s", bmPrefix, icon, entry.name.c_str());
                 }
@@ -365,14 +372,14 @@ void TreePanel::RenderContextMenu() {
     // --- Search item (always first) ---
     if (hasDirs || (hasDirs && hasFiles)) {
         // Folders selected (or mixed)
-        if (ImGui::MenuItem("\xef\x80\x82  Search in Selected...")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x80\x82", I18n::TrId("tree_search_in_selected")).c_str())) {
             wantsSearch = true;
             wantsSearchFilesTab = false;
             ImGui::CloseCurrentPopup();
         }
     } else if (hasFiles && !hasDirs) {
         // Files only
-        if (ImGui::MenuItem("\xef\x80\x82  Find/Replace in Selected...")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x80\x82", I18n::TrId("tree_find_replace_in_selected")).c_str())) {
             wantsSearch = true;
             wantsSearchFilesTab = true;
             ImGui::CloseCurrentPopup();
@@ -383,16 +390,16 @@ void TreePanel::RenderContextMenu() {
 
     // --- Directory-specific items (only when single dir selected) ---
     if (entry.isDirectory && !multiSel) {
-        if (ImGui::MenuItem("\xef\x95\xae  Extract Directory...")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x95\xae", I18n::TrId("tree_extract_directory")).c_str())) {
             wantsExtractDir = true;
             ImGui::CloseCurrentPopup();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("\xef\x81\xbc  Expand All Children")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x81\xbc", I18n::TrId("tree_expand_all")).c_str())) {
             wantsExpandAll = true;
             ImGui::CloseCurrentPopup();
         }
-        if (ImGui::MenuItem("\xef\x81\xbb  Collapse All Children")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x81\xbb", I18n::TrId("tree_collapse_all")).c_str())) {
             wantsCollapseAll = true;
             ImGui::CloseCurrentPopup();
         }
@@ -401,11 +408,11 @@ void TreePanel::RenderContextMenu() {
 
     // --- File-specific items (only when single file selected) ---
     if (!entry.isDirectory && !multiSel) {
-        if (ImGui::MenuItem("\xef\x95\xae  Extract File...")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x95\xae", I18n::TrId("tree_extract_file")).c_str())) {
             wantsExtractFile = true;
             ImGui::CloseCurrentPopup();
         }
-        if (ImGui::MenuItem("\xef\x95\xaf  Replace File...")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x95\xaf", I18n::TrId("tree_replace_file")).c_str())) {
             wantsReplaceFile = true;
             ImGui::CloseCurrentPopup();
         }
@@ -414,7 +421,7 @@ void TreePanel::RenderContextMenu() {
 
     // --- Multi-select extract (2+ selected, files and/or directories) ---
     if (multiSel && (hasFiles || hasDirs)) {
-        if (ImGui::MenuItem("\xef\x95\xae  Extract Selected...")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x95\xae", I18n::TrId("tree_extract_selected")).c_str())) {
             wantsExtractSelectedFiles = true;
             ImGui::CloseCurrentPopup();
         }
@@ -444,7 +451,7 @@ void TreePanel::RenderContextMenu() {
         const bool showJsonCsv = sawDir || sawDatc64;
         const bool showDdsPng  = sawDir || sawDds;
         if (showJsonCsv || showDdsPng) {
-            if (ImGui::BeginMenu("\xef\x83\x87  Save As")) {  // FA floppy-disk (U+F0C7)
+            if (ImGui::BeginMenu(WithIcon("\xef\x83\x87", I18n::TrId("tree_save_as")).c_str())) {  // FA floppy-disk (U+F0C7)
                 if (showJsonCsv) {
                     if (ImGui::MenuItem("JSON")) { wantsSaveAs = true; saveAsFormat = SaveFormat::Json; ImGui::CloseCurrentPopup(); }
                     if (ImGui::MenuItem("CSV"))  { wantsSaveAs = true; saveAsFormat = SaveFormat::Csv;  ImGui::CloseCurrentPopup(); }
@@ -461,11 +468,11 @@ void TreePanel::RenderContextMenu() {
 
     // --- Copy items (single selection only) ---
     if (!multiSel) {
-        if (ImGui::MenuItem("\xef\x83\x85  Copy Path")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x83\x85", I18n::TrId("tree_copy_path")).c_str())) {
             wantsCopyPath = true;
             ImGui::CloseCurrentPopup();
         }
-        if (ImGui::MenuItem("\xef\x83\x85  Copy Name")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x83\x85", I18n::TrId("tree_copy_name")).c_str())) {
             wantsCopyName = true;
             ImGui::CloseCurrentPopup();
         }
@@ -488,7 +495,7 @@ void TreePanel::RenderContextMenu() {
     }
 
     if (anyNotBookmarked || !anyBookmarked) {
-        if (ImGui::BeginMenu("\xef\x80\x85  Add Bookmark")) {
+        if (ImGui::BeginMenu(WithIcon("\xef\x80\x85", I18n::TrId("tree_add_bookmark")).c_str())) {
             // 5x2 icon grid with vertically centered icons
             const ImVec2 btnSize(24, 24);
             for (int i = 0; i < kBookmarkIconCount; ++i) {
@@ -513,7 +520,7 @@ void TreePanel::RenderContextMenu() {
     }
 
     if (anyBookmarked) {
-        if (ImGui::MenuItem("\xef\x80\x85  Remove Bookmark")) {
+        if (ImGui::MenuItem(WithIcon("\xef\x80\x85", I18n::TrId("tree_remove_bookmark")).c_str())) {
             wantsRemoveBookmark = true;
             ImGui::CloseCurrentPopup();
         }

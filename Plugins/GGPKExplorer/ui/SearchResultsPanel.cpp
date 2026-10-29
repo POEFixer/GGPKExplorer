@@ -17,15 +17,12 @@ void SearchResultsPanel::ShowSearchResults(const SearchResult& result) {
         for (const auto& fm : result.fileMatches) {
             if (fm.isDirectory) dirs++; else files++;
         }
-        char buf[128];
-        snprintf(buf, sizeof(buf), "Found %d file(s), %d folder(s)", files, dirs);
-        m_headerText = buf;
+        m_headerFirst = files;
+        m_headerSecond = dirs;
     } else {
         m_mode = Mode::ContentSearch;
-        char buf[128];
-        snprintf(buf, sizeof(buf), "Search Results \xe2\x80\x94 %d match(es) in %d file(s)",
-                 result.totalMatches, result.totalFiles);
-        m_headerText = buf;
+        m_headerFirst = result.totalMatches;
+        m_headerSecond = result.totalFiles;
     }
 }
 
@@ -38,10 +35,8 @@ void SearchResultsPanel::ShowReplaceLog(const std::vector<ReplaceResult>& result
 
     int total = 0;
     for (const auto& r : results) total += r.count;
-    char buf[128];
-    snprintf(buf, sizeof(buf), "Replaced %d occurrence(s) in %d file(s)",
-             total, static_cast<int>(results.size()));
-    m_headerText = buf;
+    m_headerFirst = total;
+    m_headerSecond = static_cast<int>(results.size());
 }
 
 void SearchResultsPanel::Clear() {
@@ -49,7 +44,8 @@ void SearchResultsPanel::Clear() {
     m_mode = Mode::None;
     m_result = SearchResult{};
     m_replaceLog.clear();
-    m_headerText.clear();
+    m_headerFirst = 0;
+    m_headerSecond = 0;
 }
 
 float SearchResultsPanel::GetHeight() const {
@@ -81,8 +77,26 @@ void SearchResultsPanel::Render() {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
         ImGui::Spacing();
 
+        std::string headerText;
+        switch (m_mode) {
+        case Mode::FileSearch:
+            headerText = I18n::TrF("results_found_files", { { "files", Num("%d", m_headerFirst) },
+                                                            { "folders", Num("%d", m_headerSecond) } });
+            break;
+        case Mode::ContentSearch:
+            headerText = I18n::TrF("results_content", { { "matches", Num("%d", m_headerFirst) },
+                                                        { "files", Num("%d", m_headerSecond) } });
+            break;
+        case Mode::ReplaceLog:
+            headerText = I18n::TrF("results_replaced", { { "occurrences", Num("%d", m_headerFirst) },
+                                                         { "files", Num("%d", m_headerSecond) } });
+            break;
+        default:
+            break;
+        }
+
         const char* icon = (m_mode == Mode::ReplaceLog) ? "\xe2\x9c\x85 " : "\xef\x80\x82 ";
-        ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "%s%s", icon, m_headerText.c_str());
+        ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "%s%s", icon, headerText.c_str());
 
         ImGui::SameLine();
         // Right-align buttons
@@ -95,14 +109,14 @@ void SearchResultsPanel::Render() {
         if (ImGui::SmallButton("\xef\x81\xbc")) {
             m_forceExpandState = 1;
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Expand All");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", I18n::Tr("results_expand_all"));
         ImGui::SameLine();
 
         // Collapse All
         if (ImGui::SmallButton("\xef\x85\x86")) {
             m_forceExpandState = -1;
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Collapse All");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", I18n::Tr("results_collapse_all"));
         ImGui::SameLine();
 
         // Panel collapse
@@ -153,9 +167,8 @@ void SearchResultsPanel::RenderFileResults() {
             if (fm.isDirectory) {
                 snprintf(label, sizeof(label), "%s%s/", icon, fm.fullPath.c_str());
             } else {
-                char sizeBuf[64];
-                FormatSize(static_cast<int64_t>(fm.fileSize), sizeBuf, sizeof(sizeBuf));
-                snprintf(label, sizeof(label), "%s%s  (%s)", icon, fm.fullPath.c_str(), sizeBuf);
+                const std::string sizeText = SizeText(static_cast<int64_t>(fm.fileSize));
+                snprintf(label, sizeof(label), "%s%s  (%s)", icon, fm.fullPath.c_str(), sizeText.c_str());
             }
 
             if (ImGui::Selectable(label)) {
@@ -173,12 +186,13 @@ void SearchResultsPanel::RenderContentResults() {
         const auto& fsr = m_result.fileResults[fi];
         ImGui::PushID(static_cast<int>(fi));
 
-        // File header as TreeNode
+        // File header as TreeNode (its id is the file's path in every language)
         const char* icon = fsr.isDatc64 ? "\xef\x83\x8e " : "\xef\x85\x9c ";
         int matchCount = static_cast<int>(fsr.contentMatches.size() + fsr.datMatches.size());
-        char fileLabel[512];
-        snprintf(fileLabel, sizeof(fileLabel), "%s%s (%d match%s)",
-                 icon, fsr.fullPath.c_str(), matchCount, matchCount == 1 ? "" : "es");
+        const std::string matches = matchCount == 1
+            ? I18n::TrF("results_match_one", { { "count", Num("%d", matchCount) } })
+            : I18n::TrF("results_match_many", { { "count", Num("%d", matchCount) } });
+        const std::string fileLabel = std::string(icon) + fsr.fullPath + " (" + matches + ")###" + fsr.fullPath;
 
         // Apply force expand/collapse
         if (m_forceExpandState != 0) {
@@ -186,7 +200,7 @@ void SearchResultsPanel::RenderContentResults() {
         }
 
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 0.6f, 1.0f, 1.0f));
-        bool nodeOpen = ImGui::TreeNodeEx(fileLabel, ImGuiTreeNodeFlags_DefaultOpen);
+        bool nodeOpen = ImGui::TreeNodeEx(fileLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
         ImGui::PopStyleColor();
 
         if (nodeOpen) {
@@ -195,13 +209,13 @@ void SearchResultsPanel::RenderContentResults() {
                 const auto& cm = fsr.contentMatches[mi];
                 ImGui::PushID(static_cast<int>(mi));
 
-                std::string lineText = cm.lineText;
-                if (lineText.size() > 200) lineText = lineText.substr(0, 200) + "...";
+                // At most 200 characters of the line, cut by characters (a byte cut splits one).
+                const std::string lineText = ShortenChars(cm.lineText, 200);
 
-                char label[1024];
-                snprintf(label, sizeof(label), "  Line %d: %s", cm.lineNumber, lineText.c_str());
-
-                if (ImGui::Selectable(label)) {
+                // Indented by code; the line's text is the file's own.
+                const std::string label = "  " + I18n::TrF("results_line", { { "line", Num("%d", cm.lineNumber) },
+                                                                             { "text", lineText } });
+                if (ImGui::Selectable(label.c_str())) {
                     if (m_onNavigate)
                         m_onNavigate(cm.fullPath, cm.lineNumber, false);
                 }
@@ -214,11 +228,10 @@ void SearchResultsPanel::RenderContentResults() {
                 const auto& dm = fsr.datMatches[mi];
                 ImGui::PushID(static_cast<int>(fsr.contentMatches.size() + mi));
 
-                char label[1024];
-                snprintf(label, sizeof(label), "  Row %d, \"%s\": %s",
-                         dm.row, dm.columnName.c_str(), dm.cellValue.c_str());
-
-                if (ImGui::Selectable(label)) {
+                const std::string label = "  " + I18n::TrF("results_dat_row", { { "row", Num("%d", dm.row) },
+                                                                                { "column", dm.columnName },
+                                                                                { "value", dm.cellValue } });
+                if (ImGui::Selectable(label.c_str())) {
                     if (m_onNavigate)
                         m_onNavigate(dm.fullPath, dm.row, true);
                 }
@@ -241,10 +254,9 @@ void SearchResultsPanel::RenderReplaceLog() {
         const auto& r = m_replaceLog[i];
         ImGui::PushID(static_cast<int>(i));
 
-        char label[512];
-        snprintf(label, sizeof(label), "\xef\x85\x9c %s \xe2\x80\x94 %d replacement(s)",
-                 r.path.c_str(), r.count);
-        if (ImGui::Selectable(label)) {
+        const std::string label = std::string("\xef\x85\x9c ") +
+            I18n::TrF("results_replace_entry", { { "path", r.path }, { "count", Num("%d", r.count) } });
+        if (ImGui::Selectable(label.c_str())) {
             if (m_onNavigate)
                 m_onNavigate(r.path, -1, false);
         }

@@ -1,4 +1,5 @@
 #include "QuickJumpDialog.h"
+#include "UiText.h"
 #include <algorithm>
 #include <cctype>
 
@@ -88,17 +89,18 @@ void QuickJumpDialog::UpdateResults(const char* query) {
 void QuickJumpDialog::Render() {
     if (!m_showQuickJump) return;
 
-    ImGui::OpenPopup("Quick Jump##GGPKExp");
+    const char* title = I18n::TrId("quick_jump_title");
+    ImGui::OpenPopup(title);
     ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_Appearing);
 
-    if (ImGui::BeginPopupModal("Quick Jump##GGPKExp", &m_showQuickJump, ImGuiWindowFlags_NoResize)) {
+    if (ImGui::BeginPopupModal(title, &m_showQuickJump, ImGuiWindowFlags_NoResize)) {
         // Auto-focus input on first frame
         if (m_quickJumpNeedsFocus) {
             ImGui::SetKeyboardFocusHere();
             m_quickJumpNeedsFocus = false;
         }
 
-        bool textChanged = ImGui::InputTextWithHint("##QJInput", "Type to search files...",
+        bool textChanged = ImGui::InputTextWithHint("##QJInput", I18n::Tr("quick_jump_hint"),
                                                      m_quickJumpBuf, sizeof(m_quickJumpBuf));
 
         if (textChanged) {
@@ -164,9 +166,9 @@ void QuickJumpDialog::Render() {
         }
 
         if (m_quickJumpResults.empty() && m_quickJumpBuf[0] != '\0') {
-            ImGui::TextDisabled("No results found");
+            ImGui::TextDisabled("%s", I18n::Tr("quick_jump_no_results"));
         } else if (m_quickJumpBuf[0] == '\0') {
-            ImGui::TextDisabled("Start typing to search...");
+            ImGui::TextDisabled("%s", I18n::Tr("quick_jump_start_typing"));
         }
 
         ImGui::EndChild();

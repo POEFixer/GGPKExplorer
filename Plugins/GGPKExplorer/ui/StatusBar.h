@@ -1,9 +1,9 @@
 #pragma once
+#include "UiText.h"
 #include <imgui.h>
 #include <string>
 #include <atomic>
 #include <cstdint>
-#include <cstdio>
 
 namespace GGPKExp {
 
@@ -15,24 +15,8 @@ struct StatusBarState {
     int64_t selectedSize = -1;
     std::atomic<float> progress{ 0.0f };      // 0.0 = idle, 0..1 = working
     std::atomic<bool> progressActive{ false };
-    std::string progressLabel;
+    LocText progressLabel;                    // set on the drawing thread before a job starts
 };
-
-// Format a byte count as human-readable string (B, KB, MB, GB).
-inline const char* FormatSize(int64_t bytes, char* buf, size_t bufSize) {
-    if (bytes < 0) {
-        snprintf(buf, bufSize, "?");
-    } else if (bytes < 1024) {
-        snprintf(buf, bufSize, "%lld B", static_cast<long long>(bytes));
-    } else if (bytes < 1024 * 1024) {
-        snprintf(buf, bufSize, "%.1f KB", bytes / 1024.0);
-    } else if (bytes < 1024LL * 1024 * 1024) {
-        snprintf(buf, bufSize, "%.1f MB", bytes / (1024.0 * 1024.0));
-    } else {
-        snprintf(buf, bufSize, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
-    }
-    return buf;
-}
 
 inline void RenderStatusBar(StatusBarState& state) {
     float height = ImGui::GetFrameHeightWithSpacing();
@@ -41,26 +25,32 @@ inline void RenderStatusBar(StatusBarState& state) {
     // Padding: left indent
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.0f);
 
+    const float gap = ImGui::GetFontSize() * 0.75f;
+    auto separator = [gap]() {
+        ImGui::SameLine(0.0f, gap);
+        ImGui::TextDisabled("|");
+        ImGui::SameLine(0.0f, gap);
+    };
+
     // File / dir counts
-    ImGui::Text("Files: %u  |  Dirs: %u", state.fileCount, state.dirCount);
+    ImGui::TextUnformatted(I18n::TrF("status_files", { { "count", Num("%u", state.fileCount) } }).c_str());
+    separator();
+    ImGui::TextUnformatted(I18n::TrF("status_dirs", { { "count", Num("%u", state.dirCount) } }).c_str());
 
     // Total size
     if (state.totalSize > 0) {
-        char sizeBuf[64];
-        FormatSize(state.totalSize, sizeBuf, sizeof(sizeBuf));
-        ImGui::SameLine();
-        ImGui::Text("  |  Total: %s", sizeBuf);
+        separator();
+        ImGui::TextUnformatted(I18n::TrF("status_total", { { "size", SizeText(state.totalSize) } }).c_str());
     }
 
     // Selected file info
     if (!state.selectedName.empty()) {
-        ImGui::SameLine();
+        separator();
         if (state.selectedSize >= 0) {
-            char sizeBuf[64];
-            FormatSize(state.selectedSize, sizeBuf, sizeof(sizeBuf));
-            ImGui::Text("  |  Selected: %s (%s)", state.selectedName.c_str(), sizeBuf);
+            ImGui::TextUnformatted(I18n::TrF("status_selected_size", { { "name", state.selectedName },
+                                                                       { "size", SizeText(state.selectedSize) } }).c_str());
         } else {
-            ImGui::Text("  |  Selected: %s", state.selectedName.c_str());
+            ImGui::TextUnformatted(I18n::TrF("status_selected", { { "name", state.selectedName } }).c_str());
         }
     }
 
@@ -68,10 +58,12 @@ inline void RenderStatusBar(StatusBarState& state) {
     if (state.progressActive.load()) {
         ImGui::SameLine();
         float avail = ImGui::GetContentRegionAvail().x;
-        float barWidth = (avail > 200.0f) ? 200.0f : avail;
+        const float wanted = ImGui::GetFontSize() * 15.0f;
+        float barWidth = (avail > wanted) ? wanted : avail;
         if (barWidth > 30.0f) {
+            const std::string label = TextOf(state.progressLabel);
             ImGui::ProgressBar(state.progress.load(), ImVec2(barWidth, 0),
-                               state.progressLabel.empty() ? nullptr : state.progressLabel.c_str());
+                               label.empty() ? nullptr : label.c_str());
         }
     }
 

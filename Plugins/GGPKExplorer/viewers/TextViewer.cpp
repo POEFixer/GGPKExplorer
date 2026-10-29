@@ -86,9 +86,17 @@ void TextViewer::Render() {
     }
 
     // ---- Text editor (monospace font required for correct positioning) ----
-    if (!m_monoFontSearched) {
-        m_monoFont = FindMonoFont();
-        m_monoFontSearched = true;
+    // The host rebuilds its font atlas when the language changes, which frees every ImFont (the
+    // new ones get new FontIds): find the font again for each atlas, never keep a freed pointer.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        const unsigned int atlasFontId = io.Fonts->Fonts.Size > 0 ? io.Fonts->Fonts[0]->FontId : 0u;
+        if (!m_monoFontSearched || m_monoFontAtlas != io.Fonts || m_monoFontAtlasFontId != atlasFontId) {
+            m_monoFont = FindMonoFont();
+            m_monoFontSearched = true;
+            m_monoFontAtlas = io.Fonts;
+            m_monoFontAtlasFontId = atlasFontId;
+        }
     }
     if (m_monoFont) ImGui::PushFont(m_monoFont, m_monoFont->LegacySize);
     m_editor->Render("##TextViewer");
