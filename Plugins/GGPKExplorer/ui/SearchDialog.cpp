@@ -55,6 +55,17 @@ void SearchDialog::Close() {
     m_showPreview = false;
 }
 
+void SearchDialog::DiscardPending() {
+    m_showPreview = false;
+    m_previewData.clear();
+    m_replacePending = false;
+    m_findNext = {};
+}
+
+void SearchDialog::Log(const char* category, const std::string& message) const {
+    if (m_log) m_log(category, message.c_str());
+}
+
 void SearchDialog::AddToHistory(const std::string& query) {
     AddToHistoryList(m_searchHistory, query);
 }
@@ -132,34 +143,46 @@ void SearchDialog::DoReplaceInFiles() {
     AddToHistory(opts.query);
     AddToHistoryList(m_replaceHistory, opts.replaceWith);
 
-    std::vector<ReplacementPreview> datPreviews;
-    auto results = m_contentSearcher->ReplaceInFiles(opts, m_tree, m_mgr, m_datSearcher, m_schema, datPreviews);
+    // On the content searcher's worker (it reads the whole scope); PollReplace shows the
+    // outcome when it ended.
+    m_contentSearcher->StartReplace(opts, m_tree, m_mgr, m_datSearcher, m_schema);
+    m_replacePending = true;
+}
+
+void SearchDialog::PollReplace() {
+    if (!m_replacePending || !m_contentSearcher) return;
+    ContentSearcher::ReplaceOutcome outcome;
+    if (!m_contentSearcher->TakeReplaceOutcome(outcome)) return;
+    m_replacePending = false;
+
+    if (!outcome.error.empty())
+        Log("Error", "GGPKExplorer: replace in files stopped: " + outcome.error);
+    for (const auto& error : outcome.writeErrors)
+        Log("Error", "GGPKExplorer: replace not written: " + error);
 
     // If there are datc64 files, show preview for those
-    if (!datPreviews.empty()) {
-        m_previewData = std::move(datPreviews);
+    if (!outcome.datPreviews.empty()) {
+        m_previewData = std::move(outcome.datPreviews);
         m_showPreview = true;
     }
 
-    // Report text file replacements immediately
-    if (!results.empty() && m_onReplaceLog)
-        m_onReplaceLog(results);
+    // Report text file replacements
+    if (!outcome.replaced.empty() && m_onReplaceLog)
+        m_onReplaceLog(outcome.replaced);
 }
 
 void SearchDialog::DoApplyPreview() {
     if (!m_mgr || !m_tree) return;
 
     std::vector<ReplaceResult> allResults;
-    const auto& flatList = m_tree->GetFlatList();
 
     for (const auto& preview : m_previewData) {
-        // Find nodePtr by path
-        uint32_t idx = m_tree->FindByPath(preview.fullPath);
-        if (idx == UINT32_MAX) continue;
-        const auto& entry = flatList[idx];
-        if (!entry.nodePtr) continue;
+        // The file by its path in the index (also inside a collapsed folder, which the
+        // tree's flat list does not hold)
+        void* nodePtr = m_mgr->FindNodeByPath(preview.fullPath);
+        if (!nodePtr) continue;
 
-        auto readRes = m_mgr->ReadFile(entry.nodePtr);
+        auto readRes = m_mgr->ReadFile(nodePtr);
         if (!readRes || readRes.value.empty()) continue;
         auto& data = readRes.value;
 
@@ -173,8 +196,11 @@ void SearchDialog::DoApplyPreview() {
 
             auto newData = m_datSearcher->ApplyReplacements(data, preview, m_schema, tableName);
             if (!newData.empty() && newData != data) {
-                m_mgr->WriteFile(entry.nodePtr, newData);
-                allResults.push_back({preview.fullPath, static_cast<int>(preview.entries.size())});
+                std::string why;
+                if (m_mgr->WriteFile(nodePtr, newData, &why))
+                    allResults.push_back({preview.fullPath, static_cast<int>(preview.entries.size())});
+                else
+                    Log("Error", "GGPKExplorer: replace not written: " + preview.fullPath + ": " + why);
             }
         } else {
             // Text file: decode to UTF-8, apply replacements, re-encode
@@ -212,8 +238,11 @@ void SearchDialog::DoApplyPreview() {
 
             if (count > 0) {
                 auto newData = EncodeFromUtf8(replaced, encoding, hasBom);
-                m_mgr->WriteFile(entry.nodePtr, newData);
-                allResults.push_back({preview.fullPath, count});
+                std::string why;
+                if (m_mgr->WriteFile(nodePtr, newData, &why))
+                    allResults.push_back({preview.fullPath, count});
+                else
+                    Log("Error", "GGPKExplorer: replace not written: " + preview.fullPath + ": " + why);
             }
         }
     }
@@ -230,6 +259,9 @@ void SearchDialog::DoApplyPreview() {
 // ---------------------------------------------------------------------------
 
 void SearchDialog::Render() {
+    // A finished Replace in Files job: its outcome, also while the dialog is closed.
+    PollReplace();
+
     if (!m_isOpen) return;
 
     bool progressVisibleNow = (m_fileSearcher && m_fileSearcher->IsRunning())
@@ -402,6 +434,8 @@ void SearchDialog::RenderFindFileTab() {
     } else if (m_fileSearcher && !m_ffResultDelivered) {
         // Search finished — deliver result exactly once
         auto result = m_fileSearcher->GetResult();
+        if (result.completed && !result.error.empty())
+            Log("Error", "GGPKExplorer: file search failed: " + result.error);
         if (result.completed && m_onResults) {
             m_ffResultDelivered = true;
             m_onResults(result);
@@ -547,6 +581,8 @@ void SearchDialog::RenderFindReplaceTab() {
     } else if (m_contentSearcher && !m_frResultDelivered) {
         // Search finished — deliver result exactly once
         auto result = m_contentSearcher->GetResult();
+        if (result.completed && !result.error.empty() && !m_frResultDelivered)
+            Log("Error", "GGPKExplorer: search in files failed: " + result.error);
         if (result.completed && m_onResults) {
             m_frResultDelivered = true;
             m_onResults(result);

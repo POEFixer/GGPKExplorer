@@ -1,5 +1,6 @@
 #include "GGPK.h"
-#include "Bundle.h" // DescribeLastOpenError
+#include "Bundle.h" // DescribeLastOpenError, Utf8Path
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <stdexcept>
@@ -9,33 +10,48 @@
 
 namespace GGPK {
 
-GGPKFile::GGPKFile(const std::string& filePath)
+GGPKFile::GGPKFile(const std::string& filePath, OpenMode mode)
     : m_filePath(filePath) {
-    // Content.ggpk genuinely needs read-write access (writes happen in-place),
-    // so no read-only fallback here — but report WHY the open failed.
-    m_stream.open(std::filesystem::path(filePath), std::ios::in | std::ios::out | std::ios::binary);
-    if (!m_stream.is_open())
-        throw std::runtime_error("Failed to open GGPK file: " + filePath
-                                 + " (" + DescribeLastOpenError() + ")");
+    if (mode == OpenMode::ReadWrite) {
+        // Content.ggpk needs read-write access for in-place writes. When that is refused
+        // (the running game) it is still readable: open read-only and let the write
+        // methods report why.
+        m_stream.open(Utf8Path(filePath), std::ios::in | std::ios::out | std::ios::binary);
+        if (!m_stream.is_open()) {
+            m_readOnlyReason = "the read-write open was refused: " + DescribeLastOpenError();
+            m_stream.clear();
+            m_readOnly = true;
+        }
+    } else {
+        m_readOnly = true;
+        m_readOnlyReason = "opened read-only";
+    }
+    // Every read goes through this handle (positional, shared read/write/delete).
+    m_readFile = ReadOnlyFile::Open(filePath, "Failed to open GGPK file");
+    m_scratch.resize(4096);
 
-    // Read GGPKRecord at offset 0
-    auto ggpkInfo = ReadRecordInfo(0);
-    if (ggpkInfo.tag != RecordTag::GGPK)
+    // GGPKRecord at offset 0: int32 length, tag, uint32 version, int64 rootDirOffset,
+    // int64 firstFreeOffset
+    LoadRecord(0, 28);
+    int32_t tag = 0;
+    if (m_scratchValid >= 8)
+        std::memcpy(&tag, m_scratch.data() + 4, sizeof(int32_t));
+    if (tag != RecordTag::GGPK || m_scratchValid < 28)
         throw std::runtime_error("Invalid GGPK file: first record is not GGPKRecord");
 
-    // GGPKRecord data: uint32 version, int64 rootDirOffset, int64 firstFreeOffset
-    m_stream.seekg(8); // After length + tag
     int32_t versionInt;
-    m_stream.read(reinterpret_cast<char*>(&versionInt), sizeof(int32_t));
+    std::memcpy(&versionInt, m_scratch.data() + 8, sizeof(int32_t));
     m_version = static_cast<uint32_t>(versionInt);
-
-    m_stream.read(reinterpret_cast<char*>(&m_rootOffset), sizeof(int64_t));
-    m_stream.read(reinterpret_cast<char*>(&m_firstFreeOffset), sizeof(int64_t));
+    std::memcpy(&m_rootOffset, m_scratch.data() + 12, sizeof(int64_t));
+    std::memcpy(&m_firstFreeOffset, m_scratch.data() + 20, sizeof(int64_t));
 
     // Read root directory and build tree
     m_root = std::make_unique<GGPKTreeNode>();
     ReadDirectoryRecord(m_rootOffset, *m_root);
     ReadTree(*m_root);
+    m_scratch.clear();
+    m_scratch.shrink_to_fit();
+    m_scratchValid = 0;
 }
 
 GGPKFile::~GGPKFile() {
@@ -43,133 +59,159 @@ GGPKFile::~GGPKFile() {
         m_stream.close();
 }
 
+void GGPKFile::ThrowIfReadOnly(const char* operation) const {
+    if (m_readOnly)
+        throw std::runtime_error(std::string(operation) + ": " + m_filePath + " is open read-only ("
+                                 + m_readOnlyReason + "). Close the game and try again.");
+}
+
+int32_t GGPKFile::LoadRecord(int64_t offset, size_t needAtLeast) {
+    // One positional read covers the header, the name and (for small directories) the
+    // entries; EnsureRecordBytes reads the rest of a long record.
+    const size_t want = (std::max)(needAtLeast, static_cast<size_t>(4096));
+    if (m_scratch.size() < want)
+        m_scratch.resize(want);
+    m_scratchValid = 0;
+    if (offset >= 0) {
+        try {
+            m_scratchValid = m_readFile.ReadAt(offset, m_scratch.data(), want);
+        } catch (const std::exception&) {
+            m_scratchValid = 0;
+        }
+    }
+    return static_cast<int32_t>(m_scratchValid);
+}
+
+void GGPKFile::EnsureRecordBytes(int64_t offset, size_t size) {
+    if (size <= m_scratchValid)
+        return;
+    if (size > (1u << 30))
+        throw std::runtime_error("Corrupt GGPK record at offset " + std::to_string(offset));
+    if (m_scratch.size() < size)
+        m_scratch.resize(size);
+    m_scratchValid += m_readFile.ReadAt(offset + static_cast<int64_t>(m_scratchValid),
+                                        m_scratch.data() + m_scratchValid, size - m_scratchValid);
+    if (m_scratchValid < size)
+        throw std::runtime_error("Truncated GGPK record at offset " + std::to_string(offset));
+}
+
 GGPKRecordInfo GGPKFile::ReadRecordInfo(int64_t offset) {
+    // A record past the end reads as length 0 / tag 0 (skipped by the walk).
     GGPKRecordInfo info{};
     info.offset = offset;
-    m_stream.seekg(static_cast<std::streamoff>(offset));
-
-    m_stream.read(reinterpret_cast<char*>(&info.length), sizeof(int32_t));
-    m_stream.read(reinterpret_cast<char*>(&info.tag), sizeof(int32_t));
-
+    LoadRecord(offset, 8);
+    if (m_scratchValid >= 8) {
+        std::memcpy(&info.length, m_scratch.data(), sizeof(int32_t));
+        std::memcpy(&info.tag, m_scratch.data() + 4, sizeof(int32_t));
+    }
     return info;
 }
 
+namespace {
+std::string DecodeName(const uint8_t* p, int32_t chars, uint32_t version) {
+    // Simplified: assume ASCII range for directory/file names (UTF-32 on v4, UTF-16LE else)
+    std::string name(static_cast<size_t>(chars), '\0');
+    for (int32_t i = 0; i < chars; ++i) {
+        if (version == 4) {
+            uint32_t c;
+            std::memcpy(&c, p + static_cast<size_t>(i) * 4, 4);
+            name[static_cast<size_t>(i)] = static_cast<char>(c);
+        } else {
+            uint16_t c;
+            std::memcpy(&c, p + static_cast<size_t>(i) * 2, 2);
+            name[static_cast<size_t>(i)] = static_cast<char>(c);
+        }
+    }
+    return name;
+}
+} // namespace
+
 void GGPKFile::ReadDirectoryRecord(int64_t offset, GGPKTreeNode& node) {
-    m_stream.seekg(static_cast<std::streamoff>(offset));
+    LoadRecord(offset, 48);
+    ParseDirectoryRecord(offset, node);
+}
 
-    int32_t length, tag;
-    m_stream.read(reinterpret_cast<char*>(&length), sizeof(int32_t));
-    m_stream.read(reinterpret_cast<char*>(&tag), sizeof(int32_t));
-
+void GGPKFile::ParseDirectoryRecord(int64_t offset, GGPKTreeNode& node) {
+    // int32 length, tag, nameLength (incl. null), entryCount, SHA-256[32], name, entries
+    int32_t length = 0, tag = 0, nameLength = 0, entryCount = 0;
+    if (m_scratchValid >= 16) {
+        std::memcpy(&length, m_scratch.data(), 4);
+        std::memcpy(&tag, m_scratch.data() + 4, 4);
+        std::memcpy(&nameLength, m_scratch.data() + 8, 4);
+        std::memcpy(&entryCount, m_scratch.data() + 12, 4);
+    }
     if (tag != RecordTag::PDIR)
         throw std::runtime_error("Expected PDIR record at offset " + std::to_string(offset));
+    if (nameLength < 1 || entryCount < 0)
+        throw std::runtime_error("Corrupt GGPK directory record at offset " + std::to_string(offset));
 
     node.offset = offset;
     node.length = length;
     node.isDirectory = true;
 
-    int32_t nameLength; // Includes null terminator
-    m_stream.read(reinterpret_cast<char*>(&nameLength), sizeof(int32_t));
-    nameLength -= 1; // Exclude null
+    const int64_t charSize = (m_version == 4) ? 4 : 2;
+    const int64_t nameBytes = static_cast<int64_t>(nameLength) * charSize;
+    const int64_t total = 48 + nameBytes + static_cast<int64_t>(entryCount) * 12;
+    EnsureRecordBytes(offset, static_cast<size_t>(total));
 
-    int32_t entryCount;
-    m_stream.read(reinterpret_cast<char*>(&entryCount), sizeof(int32_t));
+    std::memcpy(node.hash.data(), m_scratch.data() + 16, 32);
+    node.name = DecodeName(m_scratch.data() + 48, nameLength - 1, m_version);
 
-    // Read SHA-256 hash (32 bytes)
-    m_stream.read(reinterpret_cast<char*>(node.hash.data()), 32);
-
-    // Read name (UTF-16 on PC/v3)
-    if (m_version == 4) {
-        // UTF-32
-        std::vector<uint32_t> nameChars(static_cast<size_t>(nameLength));
-        m_stream.read(reinterpret_cast<char*>(nameChars.data()),
-                      static_cast<std::streamsize>(nameLength) * sizeof(uint32_t));
-        // Simplified: assume ASCII range
-        node.name.resize(static_cast<size_t>(nameLength));
-        for (size_t i = 0; i < static_cast<size_t>(nameLength); ++i)
-            node.name[i] = static_cast<char>(nameChars[i]);
-        m_stream.seekg(sizeof(uint32_t), std::ios::cur); // Null terminator
-    } else {
-        // UTF-16LE
-        std::vector<uint16_t> nameChars(static_cast<size_t>(nameLength));
-        m_stream.read(reinterpret_cast<char*>(nameChars.data()),
-                      static_cast<std::streamsize>(nameLength) * sizeof(uint16_t));
-        // Simplified: assume ASCII range for directory/file names
-        node.name.resize(static_cast<size_t>(nameLength));
-        for (size_t i = 0; i < static_cast<size_t>(nameLength); ++i)
-            node.name[i] = static_cast<char>(nameChars[i]);
-        m_stream.seekg(sizeof(uint16_t), std::ios::cur); // Null terminator
-    }
-
-    // Read entries
+    const uint8_t* entries = m_scratch.data() + 48 + nameBytes;
     node.entries.resize(static_cast<size_t>(entryCount));
     for (int32_t i = 0; i < entryCount; ++i) {
-        m_stream.read(reinterpret_cast<char*>(&node.entries[static_cast<size_t>(i)].nameHash),
-                      sizeof(uint32_t));
-        m_stream.read(reinterpret_cast<char*>(&node.entries[static_cast<size_t>(i)].offset),
-                      sizeof(int64_t));
+        std::memcpy(&node.entries[static_cast<size_t>(i)].nameHash, entries + static_cast<size_t>(i) * 12, sizeof(uint32_t));
+        std::memcpy(&node.entries[static_cast<size_t>(i)].offset, entries + static_cast<size_t>(i) * 12 + 4, sizeof(int64_t));
     }
 }
 
 void GGPKFile::ReadFileRecord(int64_t offset, GGPKTreeNode& node) {
-    m_stream.seekg(static_cast<std::streamoff>(offset));
+    LoadRecord(offset, 44);
+    ParseFileRecord(offset, node);
+}
 
-    int32_t length, tag;
-    m_stream.read(reinterpret_cast<char*>(&length), sizeof(int32_t));
-    m_stream.read(reinterpret_cast<char*>(&tag), sizeof(int32_t));
-
+void GGPKFile::ParseFileRecord(int64_t offset, GGPKTreeNode& node) {
+    // int32 length, tag, nameLength (incl. null), SHA-256[32], name, data
+    int32_t length = 0, tag = 0, nameLength = 0;
+    if (m_scratchValid >= 12) {
+        std::memcpy(&length, m_scratch.data(), 4);
+        std::memcpy(&tag, m_scratch.data() + 4, 4);
+        std::memcpy(&nameLength, m_scratch.data() + 8, 4);
+    }
     if (tag != RecordTag::FILE)
         throw std::runtime_error("Expected FILE record at offset " + std::to_string(offset));
+    if (nameLength < 1)
+        throw std::runtime_error("Corrupt GGPK file record at offset " + std::to_string(offset));
 
     node.offset = offset;
     node.length = length;
     node.isDirectory = false;
 
-    int32_t nameLength;
-    m_stream.read(reinterpret_cast<char*>(&nameLength), sizeof(int32_t));
-    nameLength -= 1; // Exclude null
+    const int64_t charSize = (m_version == 4) ? 4 : 2;
+    const int64_t headerBytes = 44 + static_cast<int64_t>(nameLength) * charSize;
+    EnsureRecordBytes(offset, static_cast<size_t>(headerBytes));
 
-    // Read SHA-256 hash (32 bytes)
-    m_stream.read(reinterpret_cast<char*>(node.hash.data()), 32);
-
-    // Read name (UTF-16 on PC/v3)
-    if (m_version == 4) {
-        std::vector<uint32_t> nameChars(static_cast<size_t>(nameLength));
-        m_stream.read(reinterpret_cast<char*>(nameChars.data()),
-                      static_cast<std::streamsize>(nameLength) * sizeof(uint32_t));
-        node.name.resize(static_cast<size_t>(nameLength));
-        for (size_t i = 0; i < static_cast<size_t>(nameLength); ++i)
-            node.name[i] = static_cast<char>(nameChars[i]);
-        m_stream.seekg(sizeof(uint32_t), std::ios::cur);
-    } else {
-        std::vector<uint16_t> nameChars(static_cast<size_t>(nameLength));
-        m_stream.read(reinterpret_cast<char*>(nameChars.data()),
-                      static_cast<std::streamsize>(nameLength) * sizeof(uint16_t));
-        node.name.resize(static_cast<size_t>(nameLength));
-        for (size_t i = 0; i < static_cast<size_t>(nameLength); ++i)
-            node.name[i] = static_cast<char>(nameChars[i]);
-        m_stream.seekg(sizeof(uint16_t), std::ios::cur);
-    }
+    std::memcpy(node.hash.data(), m_scratch.data() + 12, 32);
+    node.name = DecodeName(m_scratch.data() + 44, nameLength - 1, m_version);
 
     // Compute data offset and length
-    auto currentPos = m_stream.tellg();
-    node.dataOffset = static_cast<int64_t>(currentPos);
-    node.dataLength = length - static_cast<int32_t>(currentPos - offset);
+    node.dataOffset = offset + headerBytes;
+    node.dataLength = length - static_cast<int32_t>(headerBytes);
 }
 
 void GGPKFile::ReadTree(GGPKTreeNode& dirNode) {
     for (auto& entry : dirNode.entries) {
-        auto info = ReadRecordInfo(entry.offset);
+        auto info = ReadRecordInfo(entry.offset);   // one read: the record is now in m_scratch
 
         if (info.tag == RecordTag::PDIR) {
             auto child = std::make_unique<GGPKTreeNode>();
-            ReadDirectoryRecord(entry.offset, *child);
+            ParseDirectoryRecord(entry.offset, *child);
             child->parent = &dirNode;
             ReadTree(*child); // Recurse
             dirNode.children[child->name] = std::move(child);
         } else if (info.tag == RecordTag::FILE) {
             auto child = std::make_unique<GGPKTreeNode>();
-            ReadFileRecord(entry.offset, *child);
+            ParseFileRecord(entry.offset, *child);
             child->parent = &dirNode;
             dirNode.children[child->name] = std::move(child);
         }
@@ -180,15 +222,17 @@ void GGPKFile::ReadTree(GGPKTreeNode& dirNode) {
 std::vector<uint8_t> GGPKFile::ReadAt(int64_t offset, int32_t size) {
     if (size <= 0) return {};
 
-    std::lock_guard<std::mutex> lock(m_streamMutex);
-    m_stream.seekg(static_cast<std::streamoff>(offset));
-    if (!m_stream.good()) return {};
     std::vector<uint8_t> buf(static_cast<size_t>(size));
-    m_stream.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size));
-    if (!m_stream.good()) {
-        buf.resize(static_cast<size_t>(m_stream.gcount()));
+    try {
+        buf.resize(m_readFile.ReadAt(offset, buf.data(), buf.size()));
+    } catch (const std::exception&) {
+        return {};
     }
     return buf;
+}
+
+void GGPKFile::ReadExact(int64_t offset, void* buffer, size_t size, const std::string& what) const {
+    m_readFile.ReadExact(offset, buffer, size, what);
 }
 
 std::vector<uint8_t> GGPKFile::ReadFileContent(const GGPKTreeNode* node) {
@@ -201,6 +245,7 @@ std::vector<uint8_t> GGPKFile::ReadFileContent(const GGPKTreeNode* node) {
 void GGPKFile::WriteFileContent(GGPKTreeNode* node, const uint8_t* data, int32_t size) {
     if (!node || node->isDirectory)
         throw std::runtime_error("Cannot write to a non-file node");
+    ThrowIfReadOnly("GGPK write");
 
     if (size != node->dataLength)
         throw std::runtime_error("GGPK in-place write requires same size data (got " +
@@ -220,6 +265,7 @@ void GGPKFile::ReplaceFileContent(GGPKTreeNode* node, const uint8_t* data, int32
                                    GGPKTreeNode* parentDir) {
     if (!node || node->isDirectory)
         throw std::runtime_error("Cannot write to a non-file node");
+    ThrowIfReadOnly("GGPK write");
 
     std::lock_guard<std::mutex> lock(m_streamMutex);
 
@@ -410,6 +456,7 @@ void GGPKFile::RenewDirectoryHash(GGPKTreeNode* dirNode) {
 }
 
 void GGPKFile::RenewHashes(bool forceRenewRoot) {
+    ThrowIfReadOnly("GGPK hash update");
     std::lock_guard<std::mutex> lock(m_streamMutex);
 
     m_dirtyHashes.erase(nullptr);

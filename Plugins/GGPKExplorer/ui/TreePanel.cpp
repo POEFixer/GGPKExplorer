@@ -100,20 +100,6 @@ std::vector<std::string> TreePanel::GetSelectedPaths() const {
     return paths;
 }
 
-std::vector<std::string> TreePanel::GetSelectedDirPaths() const {
-    std::vector<std::string> paths;
-    if (!m_tree) return paths;
-    const auto& flatList = m_tree->GetFlatList();
-    for (int idx : m_selectedIndices) {
-        if (idx >= 0 && idx < static_cast<int>(flatList.size())) {
-            const auto& entry = flatList[static_cast<uint32_t>(idx)];
-            if (entry.isDirectory)
-                paths.push_back(entry.fullPath);
-        }
-    }
-    return paths;
-}
-
 bool TreePanel::HasAnyDirSelected() const {
     if (!m_tree) return false;
     const auto& flatList = m_tree->GetFlatList();

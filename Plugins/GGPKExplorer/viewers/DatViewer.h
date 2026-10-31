@@ -70,9 +70,13 @@ public:
     void Clear() override;
     void Render() override;
     void RenderSchemaTab();
-    bool HasChanges() const { return !m_modifiedCells.empty(); }
     // Unsaved cell edits, an applied or a previewed import: reloading the table would lose them.
     bool HasPendingEdits() const { return !m_modifiedCells.empty() || m_importMode || m_importConfirmOpen; }
+    // A Find references scan is reading the archive (Clear cancels it and waits for it).
+    bool IsReferenceScanRunning() const {
+        return m_findRefsFuture.valid()
+            && m_findRefsFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+    }
 
     // Foreign key navigation: set by click, consumed by ContentPanel
     std::string pendingNavPath;
@@ -215,7 +219,6 @@ private:
     std::string m_pendingImportFormat;          // "csv" or "json" for display
     bool m_importShowLog = false;               // toggle warning log visibility in modal
 
-    void RenderImportButtons();    // Import CSV/JSON buttons
     void RenderImportModal();      // confirm dialog after parse
     void ApplyPendingImport();     // user clicked Apply in modal
 };

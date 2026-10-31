@@ -31,4 +31,11 @@ bool ConvertBytesToCsv(const std::vector<uint8_t>& bytes, const std::string& tab
 bool ConvertBytesToJson(const std::vector<uint8_t>& bytes, const std::string& tableName,
                         const DatSchema& schema, const std::filesystem::path& out, std::string* err);
 
+// The same conversions into memory: `out` holds exactly the bytes the file forms write
+// (Save As converts on a pool of threads and writes with one writer). Same errors.
+bool ConvertBytesToCsvBytes(const std::vector<uint8_t>& bytes, const std::string& tableName,
+                            const DatSchema& schema, std::vector<uint8_t>& out, std::string* err);
+bool ConvertBytesToJsonBytes(const std::vector<uint8_t>& bytes, const std::string& tableName,
+                             const DatSchema& schema, std::vector<uint8_t>& out, std::string* err);
+
 } // namespace GGPKExp::DatExport

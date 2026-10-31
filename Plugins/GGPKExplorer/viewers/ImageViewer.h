@@ -19,8 +19,6 @@ public:
     void Render() override;
     bool ExportPNG(const std::string& outputPath);
 
-    int GetWidth() const { return m_width; }
-    int GetHeight() const { return m_height; }
 
 private:
     ID3D11Device* m_device = nullptr;  // non-owning, lifetime guaranteed by host (ImGui D3D device)

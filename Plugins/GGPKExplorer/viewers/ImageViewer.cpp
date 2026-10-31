@@ -324,13 +324,8 @@ void ImageViewer::Render() {
         ofn.lpstrTitle = L"Export as PNG";
 
         if (GetSaveFileNameW(&ofn)) {
-            // Convert wide path to UTF-8
-            int needed = WideCharToMultiByte(CP_UTF8, 0, savePath, -1, nullptr, 0, nullptr, nullptr);
-            if (needed > 0) {
-                std::string utf8Path(needed - 1, '\0');
-                WideCharToMultiByte(CP_UTF8, 0, savePath, -1, utf8Path.data(), needed, nullptr, nullptr);
-                ExportPNG(utf8Path);
-            }
+            const std::string utf8Path = PathUtils::WideToUtf8(savePath);
+            if (!utf8Path.empty()) ExportPNG(utf8Path);
         }
     }
 

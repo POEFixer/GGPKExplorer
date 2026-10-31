@@ -6,7 +6,7 @@
 namespace GGPKExp {
 
 // Panel state that persists between sessions.
-// Shared between MeshViewer and AocViewer (single source of truth in plugin).
+// Owned by the plugin, used by the model view (MeshViewer).
 struct AnimationPanelState {
     bool  collapsed   = false;
     float width       = 280.0f;   // expanded-state width in pixels

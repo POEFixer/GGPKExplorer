@@ -15,7 +15,14 @@ public:
     virtual ~IBundleFactory() = default;
 
     /// Get a Bundle instance for the given record. Caller owns the returned Bundle.
+    /// This is the write path's open (read-write first, fresh header): BundleRecord's
+    /// TryGetBundle and Index::GetBundleToWrite use it.
     virtual std::unique_ptr<Bundle> GetBundle(BundleRecord* record) = 0;
+
+    /// Open a bundle for reading only: never asks for write access, may be shared by
+    /// concurrent readers, never handed to the write path. The returned bundle carries no
+    /// record (the caller updates the record's uncompressed size). Default: GetBundle.
+    virtual std::unique_ptr<Bundle> OpenForRead(BundleRecord* record) { return GetBundle(record); }
 
     /// Create a new bundle file at the given relative path (ends with ".bundle.bin").
     /// Returns an open fstream for writing. Creates parent directories as needed.

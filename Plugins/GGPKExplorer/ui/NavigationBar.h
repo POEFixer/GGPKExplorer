@@ -16,7 +16,6 @@ public:
     bool CanGoForward() const { return m_historyPos + 1 < static_cast<int>(m_history.size()); }
     void GoBack();
     void GoForward();
-    const std::string& GetCurrentPath() const { return m_currentPath; }
     void Clear();
 
 private:

@@ -1,11 +1,15 @@
 // Plugins/GGPKExplorer/core/ContentSearcher.cpp
 #include "ContentSearcher.h"
+#include "SearchQuery.h"
 #include "FileTypeDetector.h"
 #include "TextEncoding.h"
+#include "ExtractJob.h"
+#include "Index.h"
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <sstream>
-#include <set>
+#include <unordered_set>
 
 namespace GGPKExp {
 
@@ -16,70 +20,19 @@ static std::string ConvertToUtf8(const std::vector<uint8_t>& data) {
     return DecodeToUtf8(data.data(), data.size(), encoding);
 }
 
-static std::string ToLower(const std::string& s) {
-    std::string r;
-    r.reserve(s.size());
-    for (unsigned char c : s) r += static_cast<char>(std::tolower(c));
-    return r;
-}
-
 ContentSearcher::~ContentSearcher() {
-    Cancel();
-    if (m_worker.joinable()) m_worker.join();
-}
-
-const std::regex& ContentSearcher::GetOrCompileRegex(const std::string& pattern, bool caseSensitive) const {
-    if (m_cachedPattern != pattern || m_cachedCaseFlag != caseSensitive || !m_cachedRegex.has_value()) {
-        auto flags = std::regex::ECMAScript | std::regex::optimize;
-        if (!caseSensitive) flags |= std::regex::icase;
-        m_cachedRegex.emplace(pattern, flags);
-        m_cachedPattern = pattern;
-        m_cachedCaseFlag = caseSensitive;
-    }
-    return *m_cachedRegex;
-}
-
-void ContentSearcher::ClearRegexCache() {
-    m_cachedRegex.reset();
-    m_cachedPattern.clear();
-}
-
-std::string ContentSearcher::ExpandExtended(const std::string& pattern) const {
-    std::string result;
-    result.reserve(pattern.size());
-    for (size_t i = 0; i < pattern.size(); ++i) {
-        if (pattern[i] == '\\' && i + 1 < pattern.size()) {
-            char next = pattern[i + 1];
-            switch (next) {
-            case 'n': result += '\n'; i++; break;
-            case 'r': result += '\r'; i++; break;
-            case 't': result += '\t'; i++; break;
-            case '0': result += '\0'; i++; break;
-            case 'x':
-                if (i + 3 < pattern.size()) {
-                    result += static_cast<char>(std::stoi(pattern.substr(i + 2, 2), nullptr, 16));
-                    i += 3;
-                } else { result += pattern[i]; }
-                break;
-            case '\\': result += '\\'; i++; break;
-            default: result += pattern[i]; break;
-            }
-        } else {
-            result += pattern[i];
-        }
-    }
-    return result;
+    CancelAndJoin();
 }
 
 bool ContentSearcher::IsDatc64(const std::string& name) const {
-    std::string lower = ToLower(name);
+    std::string lower = SearchToLower(name);
     return lower.size() > 7 && lower.substr(lower.size() - 7) == ".datc64";
 }
 
 bool ContentSearcher::MatchesFilter(const std::string& name, const std::string& filters) const {
     if (filters.empty() || filters == "*.*" || filters == "*") return true;
     auto dot = name.rfind('.');
-    std::string ext = (dot != std::string::npos) ? ToLower(name.substr(dot)) : "";
+    std::string ext = (dot != std::string::npos) ? SearchToLower(name.substr(dot)) : "";
     std::string remaining = filters;
     size_t pos = 0;
     while (pos < remaining.size()) {
@@ -90,23 +43,7 @@ bool ContentSearcher::MatchesFilter(const std::string& name, const std::string& 
         if (mask == "*.*" || mask == "*") return true;
         auto maskDot = mask.rfind('.');
         if (maskDot != std::string::npos) {
-            if (ext == ToLower(mask.substr(maskDot))) return true;
-        }
-    }
-    return false;
-}
-
-bool ContentSearcher::IsUnderScope(const std::string& path, const SearchOptions& opts) const {
-    if (opts.scopePaths.empty()) return true;
-    for (const auto& scope : opts.scopePaths) {
-        if (path == scope) return true;
-        if (path.size() > scope.size() && path[scope.size()] == '/' &&
-            path.compare(0, scope.size(), scope) == 0) {
-            if (!opts.inSubFolders) {
-                if (path.find('/', scope.size() + 1) == std::string::npos) return true;
-            } else {
-                return true;
-            }
+            if (ext == SearchToLower(mask.substr(maskDot))) return true;
         }
     }
     return false;
@@ -114,18 +51,15 @@ bool ContentSearcher::IsUnderScope(const std::string& path, const SearchOptions&
 
 std::vector<ContentMatch> ContentSearcher::SearchInText(const std::string& text,
                                                           const std::string& path,
-                                                          const SearchOptions& opts) const {
+                                                          const SearchQuery& query) const {
     std::vector<ContentMatch> matches;
-    std::string query = opts.query;
-    if (opts.mode == SearchMode::Extended)
-        query = ExpandExtended(query);
+    if (!query.Valid()) return matches;   // a regex that does not compile matches nothing
 
-    if (opts.mode == SearchMode::Regex) {
+    if (query.IsRegex()) {
         try {
             // Note: MSVC std::regex does not support multiline flag.
             // dotMatchesNewline is handled by searching full text instead of line-by-line.
-            (void)opts.dotMatchesNewline;
-            const auto& re = GetOrCompileRegex(query, opts.matchCase);
+            const auto& re = query.Regex();
 
             // Search line by line
             std::istringstream stream(text);
@@ -145,27 +79,25 @@ std::vector<ContentMatch> ContentSearcher::SearchInText(const std::string& text,
                 }
                 lineNum++;
             }
-        } catch (...) { /* invalid regex */ }
+        } catch (...) { /* a regex the matcher gives up on: what was found so far */ }
         return matches;
     }
 
     // Normal / Extended mode
-    std::string needle = opts.matchCase ? query : ToLower(query);
+    const std::string& needle = query.Needle();
 
     std::istringstream stream(text);
     std::string line;
     int lineNum = 1;
     while (std::getline(stream, line)) {
-        std::string haystack = opts.matchCase ? line : ToLower(line);
+        std::string lowered;
+        if (!query.MatchCase()) lowered = SearchToLower(line);
+        const std::string& haystack = query.MatchCase() ? line : lowered;
         size_t pos = 0;
         while ((pos = haystack.find(needle, pos)) != std::string::npos) {
             bool match = true;
-            if (opts.matchWholeWord) {
-                bool startOk = (pos == 0 || !std::isalnum(static_cast<unsigned char>(haystack[pos - 1])));
-                bool endOk = (pos + needle.size() >= haystack.size() ||
-                              !std::isalnum(static_cast<unsigned char>(haystack[pos + needle.size()])));
-                match = startOk && endOk;
-            }
+            if (query.WholeWord())
+                match = IsWholeWordAt(haystack, pos, needle.size());
             if (match) {
                 ContentMatch m;
                 m.fullPath = path;
@@ -182,20 +114,17 @@ std::vector<ContentMatch> ContentSearcher::SearchInText(const std::string& text,
     return matches;
 }
 
-std::string ContentSearcher::ReplaceInText(const std::string& text, const SearchOptions& opts,
+std::string ContentSearcher::ReplaceInText(const std::string& text, const SearchQuery& q,
                                              int& count) const {
-    std::string query = opts.query;
-    std::string replacement = opts.replaceWith;
-    if (opts.mode == SearchMode::Extended) {
-        query = ExpandExtended(query);
-        replacement = ExpandExtended(replacement);
-    }
-
     count = 0;
+    if (!q.ReplacementValid()) return text;
 
-    if (opts.mode == SearchMode::Regex) {
+    const std::string& query = q.Query();
+    const std::string& replacement = q.Replacement();
+
+    if (q.IsRegex()) {
         try {
-            const auto& re = GetOrCompileRegex(query, opts.matchCase);
+            const auto& re = q.Regex();
 
             // Count matches first
             auto it = std::sregex_iterator(text.begin(), text.end(), re);
@@ -209,8 +138,10 @@ std::string ContentSearcher::ReplaceInText(const std::string& text, const Search
     }
 
     // Normal/Extended
-    std::string needle = opts.matchCase ? query : ToLower(query);
-    std::string haystackLower = opts.matchCase ? text : ToLower(text);
+    const std::string& needle = q.Needle();
+    std::string lowered;
+    if (!q.MatchCase()) lowered = SearchToLower(text);
+    const std::string& haystackLower = q.MatchCase() ? text : lowered;
     std::string output;
     size_t pos = 0;
     while (pos < text.size()) {
@@ -219,15 +150,10 @@ std::string ContentSearcher::ReplaceInText(const std::string& text, const Search
             output += text.substr(pos);
             break;
         }
-        if (opts.matchWholeWord) {
-            bool startOk = (found == 0 || !std::isalnum(static_cast<unsigned char>(haystackLower[found - 1])));
-            bool endOk = (found + needle.size() >= haystackLower.size() ||
-                          !std::isalnum(static_cast<unsigned char>(haystackLower[found + needle.size()])));
-            if (!startOk || !endOk) {
-                output += text[pos];
-                pos++;
-                continue;
-            }
+        if (q.WholeWord() && !IsWholeWordAt(haystackLower, found, needle.size())) {
+            output += text[pos];
+            pos++;
+            continue;
         }
         output += text.substr(pos, found - pos);
         output += replacement;
@@ -238,13 +164,22 @@ std::string ContentSearcher::ReplaceInText(const std::string& text, const Search
 }
 
 // ---------------------------------------------------------------------------
-// StartFind
+// Jobs: start, cancel, results
 // ---------------------------------------------------------------------------
 
 void ContentSearcher::StartFind(const SearchOptions& opts, VirtualTree* tree, GGPKManager* mgr,
                                  DatSearcher* datSearcher, DatSchema* schema) {
-    Cancel();
-    if (m_worker.joinable()) m_worker.join();
+    Launch(&ContentSearcher::FindWorker, opts, tree, mgr, datSearcher, schema);
+}
+
+void ContentSearcher::StartReplace(const SearchOptions& opts, VirtualTree* tree, GGPKManager* mgr,
+                                    DatSearcher* datSearcher, DatSchema* schema) {
+    Launch(&ContentSearcher::ReplaceWorker, opts, tree, mgr, datSearcher, schema);
+}
+
+bool ContentSearcher::Launch(void (ContentSearcher::*body)(SearchOptions), const SearchOptions& opts,
+                             VirtualTree* tree, GGPKManager* mgr, DatSearcher* datSearcher, DatSchema* schema) {
+    CancelAndJoin();
 
     m_tree = tree;
     m_mgr = mgr;
@@ -255,15 +190,38 @@ void ContentSearcher::StartFind(const SearchOptions& opts, VirtualTree* tree, GG
     m_progress.store(0.0f);
     {
         std::lock_guard<std::mutex> lock(m_resultMutex);
-        m_result = SearchResult{};
+        if (body == &ContentSearcher::FindWorker) {
+            m_result = SearchResult{};
+        } else {
+            m_replaceOutcome = ReplaceOutcome{};
+            m_replaceOutcomeReady = false;
+        }
     }
 
-    m_worker = std::thread(&ContentSearcher::WorkerThread, this, opts);
+    try {
+        m_worker = std::thread(body, this, opts);
+        return true;
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(m_resultMutex);
+        if (body == &ContentSearcher::FindWorker) {
+            m_result.completed = true;
+            m_result.error = "could not start the search";
+        } else {
+            m_replaceOutcome.error = "could not start the replace";
+            m_replaceOutcomeReady = true;
+        }
+        m_running.store(false);
+        return false;
+    }
 }
 
 void ContentSearcher::Cancel() {
     m_cancel.store(true);
-    ClearRegexCache();
+}
+
+void ContentSearcher::CancelAndJoin() {
+    Cancel();
+    if (m_worker.joinable()) m_worker.join();
 }
 
 SearchResult ContentSearcher::GetResult() {
@@ -271,234 +229,245 @@ SearchResult ContentSearcher::GetResult() {
     return m_result;
 }
 
-void ContentSearcher::WorkerThread(SearchOptions opts) {
-    SearchResult result;
+bool ContentSearcher::TakeReplaceOutcome(ReplaceOutcome& out) {
+    std::lock_guard<std::mutex> lock(m_resultMutex);
+    if (!m_replaceOutcomeReady) return false;
+    out = std::move(m_replaceOutcome);
+    m_replaceOutcome = ReplaceOutcome{};
+    m_replaceOutcomeReady = false;
+    return true;
+}
 
-    if (!m_tree || !m_mgr || opts.query.empty()) {
+void ContentSearcher::FindWorker(SearchOptions opts) {
+    SearchResult result;
+    try {
+        Find(opts, result);
+    } catch (const std::exception& ex) {
+        result = SearchResult{};
         result.completed = true;
+        result.error = ex.what();
+    } catch (...) {
+        result = SearchResult{};
+        result.completed = true;
+        result.error = "unknown error";
+    }
+    if (m_mgr) m_mgr->TrimReadCache();
+    {
         std::lock_guard<std::mutex> lock(m_resultMutex);
         m_result = std::move(result);
-        m_running.store(false);
-        return;
     }
+    m_running.store(false);
+}
 
-    // Collect files to search via internal tree walk (ignores expansion state)
-    struct FileInfo { std::string path; std::string name; void* nodePtr; };
-    std::vector<FileInfo> filesToSearch;
+void ContentSearcher::ReplaceWorker(SearchOptions opts) {
+    ReplaceOutcome outcome;
+    try {
+        Replace(opts, outcome);
+    } catch (const std::exception& ex) {
+        outcome.error = ex.what();
+    } catch (...) {
+        outcome.error = "unknown error";
+    }
+    if (m_mgr) m_mgr->TrimReadCache();
+    {
+        std::lock_guard<std::mutex> lock(m_resultMutex);
+        m_replaceOutcome = std::move(outcome);
+        m_replaceOutcomeReady = true;
+    }
+    m_running.store(false);
+}
 
-    auto collectFiles = [&](const std::string& scopePath) {
+// ---------------------------------------------------------------------------
+// The files of the scope
+// ---------------------------------------------------------------------------
+
+std::vector<ContentSearcher::ScopeFile> ContentSearcher::CollectFiles(const SearchOptions& opts,
+                                                                      bool directChildrenRule) const {
+    // Via internal tree walk (ignores expansion state). Each file once, even when the
+    // selection names a folder and something inside it.
+    std::vector<ScopeFile> files;
+    std::unordered_set<const void*> seen;
+    auto collect = [&](const std::string& scopePath) {
         m_tree->ForEachFileUnder(scopePath, [&](const std::string& fullPath, const std::string& name,
                                                   int64_t fileSize, void* nodePtr) {
+            if (!nodePtr) return;
             if (!MatchesFilter(name, opts.filters)) return;
             if (fileSize > static_cast<int64_t>(MAX_FILE_SIZE)) return;
-            if (!opts.inSubFolders) {
-                // Only direct children: check no '/' after scope+'/'
-                std::string remainder = fullPath.substr(scopePath.size() + 1);
-                if (remainder.find('/') != std::string::npos) return;
+            if (directChildrenRule && !opts.inSubFolders) {
+                // Only direct children: no '/' after scope+'/' (a file scope is itself)
+                if (fullPath.size() > scopePath.size() &&
+                    fullPath.find('/', scopePath.size() + 1) != std::string::npos)
+                    return;
             }
-            filesToSearch.push_back({fullPath, name, nodePtr});
+            if (!seen.insert(nodePtr).second) return;
+            files.push_back({ &fullPath, &name, static_cast<GGPK::FileRecord*>(nodePtr) });
         });
     };
 
     if (opts.scopePaths.empty()) {
         // Search entire tree
-        collectFiles("");
+        collect("");
     } else {
         for (const auto& scope : opts.scopePaths)
-            collectFiles(scope);
+            collect(scope);
+    }
+    return files;
+}
+
+// A .datc64 searched through the schema whose table has no string column (or is not in the
+// schema) can never match: it is not read at all.
+bool ContentSearcher::SkipUnreadDat(const ScopeFile& file) const {
+    return IsDatc64(*file.name) && m_datSearcher && m_schema &&
+           DatSearcher::SearchableTable(*file.path, m_schema) == nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Find
+// ---------------------------------------------------------------------------
+
+void ContentSearcher::Find(const SearchOptions& opts, SearchResult& result) {
+    GGPK::Index* index = m_mgr ? m_mgr->GetIndex() : nullptr;
+    if (!m_tree || !index || opts.query.empty()) {
+        result.completed = true;
+        return;
     }
 
-    int total = static_cast<int>(filesToSearch.size());
+    const SearchQuery query(opts);   // once per search (compiled regex, lowered needle)
+    std::vector<ScopeFile> files = CollectFiles(opts, true);
+    files.erase(std::remove_if(files.begin(), files.end(),
+                               [&](const ScopeFile& f) { return SkipUnreadDat(f); }),
+                files.end());
+    std::vector<GGPK::FileRecord*> records;
+    records.reserve(files.size());
+    for (const auto& f : files) records.push_back(f.record);
 
-    for (int i = 0; i < total; ++i) {
-        if (m_cancel.load()) { result.cancelled = true; break; }
+    const size_t total = files.size();
+    std::atomic<size_t> done{0};
+    std::mutex foundMutex;
+    std::vector<std::pair<size_t, FileSearchResult>> found;
 
-        const auto& fi = filesToSearch[i];
-        auto readRes = m_mgr->ReadFile(fi.nodePtr);
-        if (!readRes || readRes.value.empty()) { m_progress.store(static_cast<float>(i + 1) / total); continue; }
-        auto& data = readRes.value;
-
-        FileSearchResult fsr;
-        fsr.fullPath = fi.path;
-
-        if (IsDatc64(fi.name) && m_datSearcher && m_schema) {
-            fsr.isDatc64 = true;
-            fsr.datMatches = m_datSearcher->SearchInDat(fi.path, data, opts, m_schema);
-            if (!fsr.datMatches.empty()) {
-                result.totalMatches += static_cast<int>(fsr.datMatches.size());
-                result.totalFiles++;
-                result.fileResults.push_back(std::move(fsr));
+    // Read grouped by bundle; each file is searched on the reader that decoded it.
+    GGPK::ReadFilesOptions readOptions;
+    readOptions.workers = ExtractJob::DefaultReadWorkers();
+    const GGPK::ReadFilesResult read = index->ReadFiles(records,
+        [&](size_t position, GGPK::FileRecord* /*record*/, std::vector<uint8_t>&& bytes, const std::string* error) {
+            if (!error && !bytes.empty()) {
+                try {
+                    const ScopeFile& f = files[position];
+                    FileSearchResult fsr;
+                    fsr.fullPath = *f.path;
+                    bool any = false;
+                    if (IsDatc64(*f.name) && m_datSearcher && m_schema) {
+                        fsr.isDatc64 = true;
+                        fsr.datMatches = m_datSearcher->SearchInDat(*f.path, bytes, query, m_schema);
+                        any = !fsr.datMatches.empty();
+                    } else {
+                        // Treat as text
+                        std::string text = ConvertToUtf8(bytes);
+                        fsr.contentMatches = SearchInText(text, *f.path, query);
+                        any = !fsr.contentMatches.empty();
+                    }
+                    if (any) {
+                        std::lock_guard<std::mutex> lock(foundMutex);
+                        found.emplace_back(position, std::move(fsr));
+                    }
+                } catch (...) {
+                    // One file the search could not handle (memory): the others go on.
+                }
             }
-        } else {
-            // Treat as text
-            std::string text = ConvertToUtf8(data);
-            fsr.contentMatches = SearchInText(text, fi.path, opts);
-            if (!fsr.contentMatches.empty()) {
-                result.totalMatches += static_cast<int>(fsr.contentMatches.size());
-                result.totalFiles++;
-                result.fileResults.push_back(std::move(fsr));
-            }
-        }
+            const size_t d = done.fetch_add(1) + 1;
+            m_progress.store(static_cast<float>(d) / static_cast<float>(total));
+        },
+        &m_cancel, readOptions);
 
-        m_progress.store(static_cast<float>(i + 1) / total);
+    std::sort(found.begin(), found.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (auto& [position, fsr] : found) {
+        (void)position;
+        result.totalMatches += static_cast<int>(fsr.isDatc64 ? fsr.datMatches.size() : fsr.contentMatches.size());
+        result.totalFiles++;
+        result.fileResults.push_back(std::move(fsr));
     }
-
+    result.cancelled = read.cancelled || m_cancel.load();
     result.completed = !result.cancelled;
-    ClearRegexCache();
-    std::lock_guard<std::mutex> lock(m_resultMutex);
-    m_result = std::move(result);
-    m_running.store(false);
 }
 
 // ---------------------------------------------------------------------------
-// ReplaceInFiles — direct replace for text, collect datc64 previews
+// Replace — text files rewritten, datc64 matches collected as previews
 // ---------------------------------------------------------------------------
 
-std::vector<ReplaceResult> ContentSearcher::ReplaceInFiles(
-    const SearchOptions& opts, VirtualTree* tree, GGPKManager* mgr,
-    DatSearcher* datSearcher, DatSchema* schema,
-    std::vector<ReplacementPreview>& outDatPreviews)
-{
-    std::vector<ReplaceResult> results;
-    outDatPreviews.clear();
+void ContentSearcher::Replace(const SearchOptions& opts, ReplaceOutcome& outcome) {
+    GGPK::Index* index = m_mgr ? m_mgr->GetIndex() : nullptr;
+    if (!m_tree || !index || opts.query.empty()) return;
 
-    if (!tree || !mgr || opts.query.empty()) return results;
+    const SearchQuery query(opts);
+    std::vector<ScopeFile> files = CollectFiles(opts, false);
+    files.erase(std::remove_if(files.begin(), files.end(),
+                               [&](const ScopeFile& f) { return SkipUnreadDat(f); }),
+                files.end());
+    std::vector<GGPK::FileRecord*> records;
+    records.reserve(files.size());
+    for (const auto& f : files) records.push_back(f.record);
 
-    // Collect files via tree walk
-    struct FInfo { std::string path; std::string name; void* nodePtr; };
-    std::vector<FInfo> files;
-    auto collect = [&](const std::string& scope) {
-        tree->ForEachFileUnder(scope, [&](const std::string& fp, const std::string& nm, int64_t sz, void* np) {
-            if (!MatchesFilter(nm, opts.filters)) return;
-            if (sz > static_cast<int64_t>(MAX_FILE_SIZE)) return;
-            files.push_back({fp, nm, np});
-        });
-    };
-    if (opts.scopePaths.empty()) collect("");
-    else for (const auto& s : opts.scopePaths) collect(s);
+    const size_t total = files.size();
+    size_t done = 0;
+    std::vector<std::pair<size_t, ReplaceResult>> replaced;
+    std::vector<std::pair<size_t, ReplacementPreview>> previews;
+    std::vector<std::pair<size_t, std::string>> writeErrors;
 
-    for (const auto& entry : files) {
-        auto readRes = mgr->ReadFile(entry.nodePtr);
-        if (!readRes || readRes.value.empty()) continue;
-        auto& data = readRes.value;
+    // Sink calls one at a time (serializeSink): the writes go into the archive in bundle
+    // order, and the lists need no lock. Decoding still runs on several readers.
+    GGPK::ReadFilesOptions readOptions;
+    readOptions.workers = ExtractJob::DefaultReadWorkers();
+    readOptions.serializeSink = true;
+    const GGPK::ReadFilesResult read = index->ReadFiles(records,
+        [&](size_t position, GGPK::FileRecord* /*record*/, std::vector<uint8_t>&& data, const std::string* error) {
+            const ScopeFile& f = files[position];
+            if (!error && !data.empty()) {
+                try {
+                    if (IsDatc64(*f.name) && m_datSearcher && m_schema) {
+                        auto preview = m_datSearcher->BuildPreview(*f.path, data, query, m_schema);
+                        if (!preview.entries.empty())
+                            previews.emplace_back(position, std::move(preview));
+                    } else {
+                        auto encoding = DetectEncoding(data.data(), data.size());
+                        bool hasBom = false;
+                        if (data.size() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
+                            hasBom = true;
+                        else if (data.size() >= 2 && ((data[0] == 0xFF && data[1] == 0xFE) || (data[0] == 0xFE && data[1] == 0xFF)))
+                            hasBom = true;
 
-        if (IsDatc64(entry.name) && datSearcher && schema) {
-            auto preview = datSearcher->BuildPreview(entry.path, data, opts, schema);
-            if (!preview.entries.empty())
-                outDatPreviews.push_back(std::move(preview));
-        } else {
-            auto encoding = DetectEncoding(data.data(), data.size());
-            bool hasBom = false;
-            if (data.size() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
-                hasBom = true;
-            else if (data.size() >= 2 && ((data[0] == 0xFF && data[1] == 0xFE) || (data[0] == 0xFE && data[1] == 0xFF)))
-                hasBom = true;
-
-            std::string text = DecodeToUtf8(data.data(), data.size(), encoding);
-            int count = 0;
-            std::string replaced = ReplaceInText(text, opts, count);
-            if (count > 0) {
-                auto newData = EncodeFromUtf8(replaced, encoding, hasBom);
-                mgr->WriteFile(entry.nodePtr, newData);
-                results.push_back({entry.path, count});
+                        std::string text = DecodeToUtf8(data.data(), data.size(), encoding);
+                        int count = 0;
+                        std::string replacedText = ReplaceInText(text, query, count);
+                        if (count > 0) {
+                            auto newData = EncodeFromUtf8(replacedText, encoding, hasBom);
+                            std::string why;
+                            if (m_mgr->WriteFile(f.record, newData, &why))
+                                replaced.emplace_back(position, ReplaceResult{ *f.path, count });
+                            else
+                                writeErrors.emplace_back(position, *f.path + ": " + why);
+                        }
+                    }
+                } catch (const std::exception& ex) {
+                    writeErrors.emplace_back(position, *f.path + ": " + ex.what());
+                } catch (...) {
+                    writeErrors.emplace_back(position, *f.path + ": unknown error");
+                }
             }
-        }
-    }
-    return results;
-}
+            ++done;
+            m_progress.store(static_cast<float>(done) / static_cast<float>(total));
+        },
+        &m_cancel, readOptions);
 
-// ---------------------------------------------------------------------------
-// BuildPreview
-// ---------------------------------------------------------------------------
-
-std::vector<ReplacementPreview> ContentSearcher::BuildPreview(
-    const SearchOptions& opts, VirtualTree* tree, GGPKManager* mgr,
-    DatSearcher* datSearcher, DatSchema* schema)
-{
-    std::vector<ReplacementPreview> previews;
-    if (!tree || !mgr || opts.query.empty()) return previews;
-
-    // Collect files via tree walk
-    struct FInfo { std::string path; std::string name; void* nodePtr; };
-    std::vector<FInfo> files;
-    auto collect = [&](const std::string& scope) {
-        tree->ForEachFileUnder(scope, [&](const std::string& fp, const std::string& nm, int64_t sz, void* np) {
-            if (!MatchesFilter(nm, opts.filters)) return;
-            if (sz > static_cast<int64_t>(MAX_FILE_SIZE)) return;
-            files.push_back({fp, nm, np});
-        });
-    };
-    if (opts.scopePaths.empty()) collect("");
-    else for (const auto& s : opts.scopePaths) collect(s);
-
-    for (const auto& entry : files) {
-        auto readRes = mgr->ReadFile(entry.nodePtr);
-        if (!readRes || readRes.value.empty()) continue;
-        auto& data = readRes.value;
-
-        if (IsDatc64(entry.name) && datSearcher && schema) {
-            auto preview = datSearcher->BuildPreview(entry.path, data, opts, schema);
-            if (!preview.entries.empty())
-                previews.push_back(std::move(preview));
-        } else {
-            std::string text = ConvertToUtf8(data);
-            auto matches = SearchInText(text, entry.path, opts);
-            if (matches.empty()) continue;
-
-            ReplacementPreview preview;
-            preview.fullPath = entry.path;
-            preview.isDatc64 = false;
-
-            std::set<int> processedLines;
-            for (const auto& m : matches) {
-                if (processedLines.count(m.lineNumber)) continue;
-                processedLines.insert(m.lineNumber);
-
-                ReplacementPreview::Entry e;
-                e.line = m.lineNumber;
-                e.before = m.lineText;
-                int dummy = 0;
-                SearchOptions lineOpts = opts;
-                e.after = ReplaceInText(m.lineText, lineOpts, dummy);
-                if (e.before != e.after)
-                    preview.entries.push_back(std::move(e));
-            }
-            if (!preview.entries.empty())
-                previews.push_back(std::move(preview));
-        }
-    }
-    return previews;
-}
-
-// ---------------------------------------------------------------------------
-// ApplyPreview
-// ---------------------------------------------------------------------------
-
-std::vector<ReplaceResult> ContentSearcher::ApplyPreview(
-    const std::vector<ReplacementPreview>& preview,
-    GGPKManager* mgr, DatSearcher* datSearcher, DatSchema* schema)
-{
-    std::vector<ReplaceResult> results;
-    if (!mgr) return results;
-
-    for (const auto& p : preview) {
-        if (p.entries.empty()) continue;
-
-        // Find node by path — read current data
-        // We need to find the nodePtr. Use the tree to look it up.
-        // This is called from the main thread with access to the tree.
-        // Actually, we need the nodePtr. Let's store it or re-read.
-        // For simplicity, we search the flat list again.
-        // The caller should provide the tree.
-        // For now, this method writes based on preview data.
-
-        // Actually we can't easily get nodePtr from path without the tree.
-        // The caller (SearchDialog/GGPKExplorer) should handle the actual write.
-        // Let's mark this as requiring tree access.
-
-        results.push_back({p.fullPath, static_cast<int>(p.entries.size())});
-    }
-    return results;
+    auto byPosition = [](const auto& a, const auto& b) { return a.first < b.first; };
+    std::sort(replaced.begin(), replaced.end(), byPosition);
+    std::sort(previews.begin(), previews.end(), byPosition);
+    std::sort(writeErrors.begin(), writeErrors.end(), byPosition);
+    for (auto& [position, r] : replaced) { (void)position; outcome.replaced.push_back(std::move(r)); }
+    for (auto& [position, p] : previews) { (void)position; outcome.datPreviews.push_back(std::move(p)); }
+    for (auto& [position, e] : writeErrors) { (void)position; outcome.writeErrors.push_back(std::move(e)); }
+    outcome.cancelled = read.cancelled || m_cancel.load();
 }
 
 } // namespace GGPKExp

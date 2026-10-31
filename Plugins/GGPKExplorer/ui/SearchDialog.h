@@ -19,6 +19,7 @@ class SearchDialog {
 public:
     using ResultCallback = std::function<void(const SearchResult& result)>;
     using ReplaceLogCallback = std::function<void(const std::vector<ReplaceResult>& results)>;
+    using LogCallback = std::function<void(const char* category, const char* message)>;
 
     void SetTree(VirtualTree* tree) { m_tree = tree; }
     void SetManager(GGPKManager* mgr) { m_mgr = mgr; }
@@ -29,6 +30,11 @@ public:
 
     void SetOnResults(ResultCallback cb) { m_onResults = std::move(cb); }
     void SetOnReplaceLog(ReplaceLogCallback cb) { m_onReplaceLog = std::move(cb); }
+    void SetLogCallback(LogCallback cb) { m_log = std::move(cb); }
+
+    /// The archive closes: a replace preview waiting for confirmation and the Find Next
+    /// position name files of it, so they are dropped.
+    void DiscardPending();
 
     void SaveState(nlohmann::json& j) const;
     void LoadState(const nlohmann::json& j);
@@ -72,6 +78,13 @@ private:
     // Callbacks
     ResultCallback m_onResults;
     ReplaceLogCallback m_onReplaceLog;
+    LogCallback m_log;
+
+    // A Replace in Files job runs on the content searcher's worker; its outcome is taken
+    // (PollReplace, every frame) once it ended.
+    bool m_replacePending = false;
+    void PollReplace();
+    void Log(const char* category, const std::string& message) const;
 
     // Find File tab state
     char m_findFileBuf[256] = {};

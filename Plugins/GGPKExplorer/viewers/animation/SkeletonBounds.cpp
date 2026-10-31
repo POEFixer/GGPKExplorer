@@ -18,16 +18,6 @@ float SkeletonBounds::MaxExtent() const {
     return std::max(ex, std::max(ey, ez));
 }
 
-SkeletonBounds ComputeStaticLocalBbox(const std::vector<float>& positions) {
-    SkeletonBounds b;
-    // Positions are packed x,y,z triplets.
-    const size_t tri = positions.size() / 3;
-    for (size_t i = 0; i < tri; ++i) {
-        b.Include(positions[i*3 + 0], positions[i*3 + 1], positions[i*3 + 2]);
-    }
-    return b;
-}
-
 SkeletonBounds ComputeAnimatedBounds(const Parsers::ResolvedSkeleton& sk,
                                       const SkeletonBounds& staticLocal) {
     SkeletonBounds b;

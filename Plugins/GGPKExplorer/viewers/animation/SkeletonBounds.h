@@ -34,11 +34,6 @@ struct SkeletonBounds {
     float MaxExtent() const;
 };
 
-// Static local-space bbox of skinned mesh vertices. Computed once per model
-// load; reused every frame by ComputeAnimatedBounds. Positions here are in
-// the mesh's local space (before skinning).
-SkeletonBounds ComputeStaticLocalBbox(const std::vector<float>& positions);
-
 // Computes a per-frame world-space bbox from the skeleton's current
 // worldTransforms. Each bone's translation is included; the box is then
 // inflated on all axes by staticLocal.MaxExtent() * 0.5f so the center sits

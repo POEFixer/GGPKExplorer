@@ -288,18 +288,12 @@ void PsgViewer::FitToView(ImVec2 availSize) {
 }
 
 // ---------------------------------------------------------------------------
-// WorldToScreen / IsOnScreen
+// WorldToScreen
 // ---------------------------------------------------------------------------
 
 ImVec2 PsgViewer::WorldToScreen(float wx, float wy, ImVec2 origin, ImVec2 /*size*/) const {
     return ImVec2(origin.x + wx * m_zoom + m_pan.x,
                   origin.y + wy * m_zoom + m_pan.y);
-}
-
-bool PsgViewer::IsOnScreen(float wx, float wy, ImVec2 origin, ImVec2 size, float margin) const {
-    ImVec2 sp = WorldToScreen(wx, wy, origin, size);
-    return sp.x >= origin.x - margin && sp.x <= origin.x + size.x + margin &&
-           sp.y >= origin.y - margin && sp.y <= origin.y + size.y + margin;
 }
 
 // ---------------------------------------------------------------------------

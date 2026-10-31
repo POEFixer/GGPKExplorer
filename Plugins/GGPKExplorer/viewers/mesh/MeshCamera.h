@@ -21,19 +21,6 @@ public:
     /// Compute the camera eye position in world space
     void GetEyePosition(float& x, float& y, float& z) const;
 
-    /// Get the look-at target position
-    void GetTargetPosition(float& x, float& y, float& z) const;
-
-    /// Get the camera-to-target distance
-    float GetDistance() const { return m_distance; }
-
-    /// Get yaw/pitch angles (for info display)
-    float GetYaw() const { return m_yaw; }
-    float GetPitch() const { return m_pitch; }
-
-    /// Override yaw/pitch (e.g. after FitToBounds, to pick a different starting angle)
-    void SetYawPitch(float yaw, float pitch) { m_yaw = yaw; m_pitch = pitch; }
-
     /// Override the orbit pivot (look-at target) in world space.
     /// Pure setter: orbit yaw/pitch/distance are preserved. Use this from
     /// per-frame code (e.g. "camera follows model root bone") to shift the

@@ -20,8 +20,7 @@ public:
     const std::string& GetSelectedPath() const { return m_selectedPath; }
     void SetSelectedPath(const std::string& path);
     std::vector<std::string> GetSelectedPaths() const;
-    std::vector<std::string> GetSelectedDirPaths() const;
-    bool IsSelected(uint32_t index) const { return m_selectedIndices.count(static_cast<int>(index)) > 0; }
+    /// Nothing selected (the archive closed: the indices named entries of its tree).
     void ClearSelection();
 
     /// Request that the next render scroll to the currently selected path and

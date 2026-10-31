@@ -112,8 +112,8 @@ public:
             m_currentLang = s->statDescLanguage;
         }
     }
-    // Consume and clear the "settings changed" flag. Mirrors MeshViewer /
-    // AocViewer mechanism — GGPKExplorer polls this each frame and triggers
+    // Consume and clear the "settings changed" flag. Mirrors the MeshViewer
+    // mechanism — GGPKExplorer polls this each frame and triggers
     // a debounced save when true.
     bool ConsumeUiSettingsDirty() {
         const bool was = m_settingsDirty;
@@ -241,8 +241,6 @@ private:
     void ComputeBounds();
     void FitToView(ImVec2 availSize);
     ImVec2 WorldToScreen(float wx, float wy, ImVec2 origin, ImVec2 size) const;
-    bool IsOnScreen(float wx, float wy, ImVec2 origin, ImVec2 size, float margin) const;
-
     const PassiveSkillInfo* GetSkillInfo(uint32_t hash) const {
         auto it = m_skillInfo.find(hash);
         return (it != m_skillInfo.end()) ? &it->second : nullptr;

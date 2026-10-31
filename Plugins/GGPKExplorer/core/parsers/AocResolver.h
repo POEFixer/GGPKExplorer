@@ -2,18 +2,11 @@
 
 #include "../Result.h"
 #include "AocTypes.h"
-#include <memory>
 #include <string>
-#include <unordered_map>
 
 namespace GGPKExp { class GGPKManager; }
 
 namespace GGPKExp { namespace Parsers {
-
-// Cache of already-parsed .aoc files, keyed by normalized GGPK path.
-// Pass the same cache instance across related resolver calls to avoid
-// re-parsing shared parents.
-using AocResolverCache = std::unordered_map<std::string, std::shared_ptr<AocFile>>;
 
 // Merges the extends chain starting from `leaf`. Uses GGPKManager to resolve
 // parent paths ("Metadata/Foo" → "Metadata/Foo.aoc"), parse them (tokenizer+parser),
@@ -27,8 +20,15 @@ using AocResolverCache = std::unordered_map<std::string, std::shared_ptr<AocFile
 // Missing parent or parse failure → soft warning, merge continues with what we have.
 //
 // Returns AocDocument with merged AocFile, inheritance chain, and warnings.
-Result<AocDocument> ResolveExtends(const AocFile&    leaf,
-                                    GGPKManager*      ggpkMgr,
-                                    AocResolverCache* cache = nullptr);
+Result<AocDocument> ResolveExtends(const AocFile& leaf, GGPKManager* ggpkMgr);
+
+// The model a merged .aoc names: the `skin` of its SkinMesh block (a .sm path,
+// possibly without the extension) and the `skeleton` of its
+// ClientAnimationController block (an .ast path). Empty when absent.
+struct AocModelRefs {
+    std::string skinPath;
+    std::string skeletonPath;
+};
+AocModelRefs FindModelRefs(const AocFile& merged);
 
 }} // namespace GGPKExp::Parsers

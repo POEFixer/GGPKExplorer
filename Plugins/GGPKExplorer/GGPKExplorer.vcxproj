@@ -96,7 +96,6 @@
     <ClCompile Include="ui\BookmarkManager.cpp" />
     <ClCompile Include="ui\ExtractDialog.cpp" />
     <ClCompile Include="ui\SaveAsExporter.cpp" />
-    <ClCompile Include="ui\AttachBrowseModal.cpp" />
     <!-- Viewers -->
     <ClCompile Include="viewers\HexViewer.cpp" />
     <ClCompile Include="viewers\TextViewer.cpp" />
@@ -110,15 +109,6 @@
     <ClCompile Include="viewers\editors\GgpkTreePicker.cpp" />
     <ClCompile Include="viewers\MatTableViewer.cpp" />
     <ClCompile Include="viewers\MeshViewer.cpp" />
-    <ClCompile Include="viewers\AocViewer.cpp" />
-    <ClCompile Include="viewers\AocViewer_3DPreview.cpp" />
-    <ClCompile Include="viewers\AocViewer_Info.cpp" />
-    <ClCompile Include="viewers\AocViewer_Sockets.cpp" />
-    <ClCompile Include="viewers\AocViewer_Animations.cpp" />
-    <ClCompile Include="viewers\AocViewer_Diagnostic.cpp" />
-    <ClCompile Include="viewers\aoc\AocSceneGraph.cpp" />
-    <ClCompile Include="viewers\aoc\AocLightSystem.cpp" />
-    <ClCompile Include="viewers\aoc\AocAudioSystem.cpp" />
     <ClCompile Include="viewers\mesh\MeshCamera.cpp" />
     <ClCompile Include="viewers\mesh\MeshMaterial.cpp" />
     <ClCompile Include="viewers\mesh\MeshRenderer.cpp" />
@@ -150,28 +140,14 @@
     <ClCompile Include="core\parsers\AstSkeletonBuilder.cpp" />
     <ClCompile Include="viewers\animation\AnimationPlayer.cpp" />
     <ClCompile Include="viewers\animation\AnimationDefaults.cpp" />
-    <ClCompile Include="viewers\animation\TimelineUi.cpp" />
     <ClCompile Include="viewers\animation\AnimationSidePanel.cpp" />
     <ClCompile Include="viewers\animation\KeyframeDecoder.cpp" />
-    <ClCompile Include="viewers\animation\PoseComposer.cpp" />
     <ClCompile Include="viewers\animation\PoseInterpolator.cpp" />
     <ClCompile Include="viewers\animation\SkinningPalette.cpp" />
     <ClCompile Include="viewers\animation\SkeletonBounds.cpp" />
     <ClCompile Include="core\parsers\AocTokenizer.cpp" />
     <ClCompile Include="core\parsers\AocParser.cpp" />
     <ClCompile Include="core\parsers\AocResolver.cpp" />
-    <ClCompile Include="core\parsers\AocSkeletonAugmenter.cpp" />
-    <ClCompile Include="core\parsers\AocLightsParser.cpp" />
-    <ClCompile Include="core\parsers\AocSoundEventsParser.cpp" />
-    <ClCompile Include="core\parsers\AocParticleEffectsParser.cpp" />
-    <ClCompile Include="core\parsers\OtParser.cpp" />
-    <ClCompile Include="viewers\aoc\AocTransitionState.cpp" />
-    <ClCompile Include="viewers\aoc\AocPersistedAttachments.cpp" />
-    <ClCompile Include="viewers\aoc\AocRecentAttachments.cpp" />
-    <ClCompile Include="viewers\aoc\AocUiHelpers.cpp" />
-    <ClCompile Include="viewers\aoc\ItemVisualIdentityCatalog.cpp" />
-    <ClCompile Include="viewers\aoc\ItemIconCache.cpp" />
-    <ClCompile Include="viewers\aoc\AocParticleSystem.cpp" />
     <ClCompile Include="core\parsers\SmdParser.cpp" />
     <!-- Core: GGPKManager, VirtualTree, DatParser, DatSchema, Searchers -->
     <ClCompile Include="core\GGPKManager.cpp" />
@@ -182,10 +158,10 @@
     <ClCompile Include="core\ImageExport.cpp" />
     <ClCompile Include="core\DatImporter.cpp" />
     <ClCompile Include="core\FileSearcher.cpp" />
+    <ClCompile Include="core\ExtractJob.cpp" />
+    <ClCompile Include="core\DatReferenceScan.cpp" />
     <ClCompile Include="core\ContentSearcher.cpp" />
     <ClCompile Include="core\DatSearcher.cpp" />
-    <!-- Dev-only: Serialize round-trip test harness (active only when _DEBUG is defined) -->
-    <ClCompile Include="dev\DatRoundTripTest.cpp" />
     <!-- GGPK library (first-party, from POEFixer/smoother/ggpk/) -->
     <ClCompile Include="lib\ggpk\GGPK.cpp" />
     <ClCompile Include="lib\ggpk\Bundle.cpp" />
@@ -265,7 +241,6 @@
       <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">TurnOffAllWarnings</WarningLevel>
       <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Dbg|x64'">false</SDLCheck>
     </ClCompile>
-    <!-- BCDirectCompute.cpp excluded: needs pre-compiled shader .inc files (GPU compute path not needed) -->
     <ClCompile Include="lib\DirectXTex\DirectXTexMipmaps.cpp">
       <WarningLevel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">TurnOffAllWarnings</WarningLevel>
       <SDLCheck Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</SDLCheck>
@@ -294,7 +269,6 @@
     <ClInclude Include="ui\ExtractDialog.h" />
     <ClInclude Include="ui\SaveAsExporter.h" />
     <ClInclude Include="ui\SaveFormat.h" />
-    <ClInclude Include="ui\AttachBrowseModal.h" />
     <ClInclude Include="ui\UiText.h" />
     <ClInclude Include="ui\UiTextCore.h" />
     <ClInclude Include="ui\SchemaGate.h" />
@@ -311,10 +285,6 @@
     <ClInclude Include="viewers\AudioViewer.h" />
     <!-- New viewer headers (stubs) -->
     <ClInclude Include="viewers\MeshViewer.h" />
-    <ClInclude Include="viewers\AocViewer.h" />
-    <ClInclude Include="viewers\aoc\AocSceneGraph.h" />
-    <ClInclude Include="viewers\aoc\AocLightSystem.h" />
-    <ClInclude Include="viewers\aoc\AocAudioSystem.h" />
     <ClInclude Include="viewers\MeshShaders.h" />
     <ClInclude Include="viewers\mesh\MeshCamera.h" />
     <ClInclude Include="viewers\mesh\MeshMaterial.h" />
@@ -327,13 +297,11 @@
     <ClInclude Include="viewers\MatTableViewer.h" />
     <ClInclude Include="viewers\animation\AnimationPlayer.h" />
     <ClInclude Include="viewers\animation\AnimationDefaults.h" />
-    <ClInclude Include="viewers\animation\TimelineUi.h" />
     <ClInclude Include="viewers\animation\AnimationSidePanel.h" />
     <ClInclude Include="viewers\animation\AnimationTypes.h" />
     <ClInclude Include="viewers\animation\MatrixMath.h" />
     <ClInclude Include="viewers\animation\SkinningPalette.h" />
     <ClInclude Include="viewers\animation\KeyframeDecoder.h" />
-    <ClInclude Include="viewers\animation\PoseComposer.h" />
     <ClInclude Include="viewers\animation\PoseInterpolator.h" />
     <ClInclude Include="viewers\animation\SkeletonBounds.h" />
     <!-- Core: Infrastructure utility headers -->
@@ -354,10 +322,10 @@
     <ClInclude Include="core\DatImporter.h" />
     <ClInclude Include="core\SearchTypes.h" />
     <ClInclude Include="core\FileSearcher.h" />
+    <ClInclude Include="core\ExtractJob.h" />
+    <ClInclude Include="core\SearchQuery.h" />
     <ClInclude Include="core\ContentSearcher.h" />
     <ClInclude Include="core\DatSearcher.h" />
-    <!-- Dev-only: Serialize round-trip test harness header -->
-    <ClInclude Include="dev\DatRoundTripTest.h" />
     <!-- Parser headers (header-only) -->
     <ClInclude Include="core\parsers\TerrainGridParser.h" />
     <ClInclude Include="core\parsers\MtpParser.h" />
@@ -372,19 +340,6 @@
     <ClInclude Include="core\parsers\AocTokenizer.h" />
     <ClInclude Include="core\parsers\AocParser.h" />
     <ClInclude Include="core\parsers\AocResolver.h" />
-    <ClInclude Include="core\parsers\AocSkeletonAugmenter.h" />
-    <ClInclude Include="core\parsers\AocLightsParser.h" />
-    <ClInclude Include="core\parsers\AocSoundEventsParser.h" />
-    <ClInclude Include="core\parsers\AocJsonHelpers.h" />
-    <ClInclude Include="core\parsers\AocParticleEffectsParser.h" />
-    <ClInclude Include="core\parsers\OtParser.h" />
-    <ClInclude Include="viewers\aoc\AocTransitionState.h" />
-    <ClInclude Include="viewers\aoc\AocPersistedAttachments.h" />
-    <ClInclude Include="viewers\aoc\AocRecentAttachments.h" />
-    <ClInclude Include="viewers\aoc\AocUiHelpers.h" />
-    <ClInclude Include="viewers\aoc\ItemVisualIdentityCatalog.h" />
-    <ClInclude Include="viewers\aoc\ItemIconCache.h" />
-    <ClInclude Include="viewers\aoc\AocParticleSystem.h" />
     <ClInclude Include="core\parsers\SmParser.h" />
     <!-- GGPK library headers -->
     <ClInclude Include="lib\ggpk\GGPK.h" />
@@ -399,6 +354,9 @@
     <ClInclude Include="lib\ggpk\IBundleFactory.h" />
     <ClInclude Include="lib\ggpk\GGPKBundleFactory.h" />
     <ClInclude Include="lib\ggpk\DriveBundleFactory.h" />
+    <ClInclude Include="lib\ggpk\GGPKHost.h" />
+    <ClInclude Include="lib\ggpk\ReadCache.h" />
+    <ClInclude Include="lib\ggpk\FileAccess.h" />
     <ClInclude Include="..\..\POEFixer\plugin_sdk\PluginAbi.h" />
     <ClInclude Include="..\..\POEFixer\plugin_sdk\PluginSDK.h" />
     <!-- Third-party: DDSTextureLoader11 -->
@@ -410,9 +368,7 @@
     <ClInclude Include="lib\DirectXTex\scoped.h" />
     <ClInclude Include="lib\DirectXTex\DDS.h" />
     <ClInclude Include="lib\DirectXTex\BC.h" />
-    <ClInclude Include="lib\DirectXTex\BCDirectCompute.h" />
     <!-- Third-party: stb -->
-    <ClInclude Include="lib\stb_image.h" />
     <ClInclude Include="lib\stb_image_write.h" />
     <!-- Third-party: imgui_memory_editor -->
     <ClInclude Include="lib\imgui_memory_editor.h" />

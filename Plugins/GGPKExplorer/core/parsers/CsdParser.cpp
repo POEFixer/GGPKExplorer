@@ -203,9 +203,8 @@ void ParseDecodedCsdMultiLang(const std::string& text,
 
             CsdFormatMap& langMap = out[activeLang];
             for (const auto& id : pendingIds) {
-                // First format per (stat_id, language) wins; subsequent files
-                // in ParseCsdRecursive can override thanks to operator[]
-                // assignment on merge (same semantics as before).
+                // Later files merged into the same map override earlier ones
+                // (operator[] assignment).
                 langMap[id] = fmt;
             }
             capturedFormat = true;
@@ -244,42 +243,6 @@ void ParseCsd(const uint8_t* data,
     // Merge into caller's out (preserves accumulate-across-files semantics).
     for (auto& [id, fmt] : it->second) {
         out[id] = std::move(fmt);
-    }
-}
-
-static std::string NormalizeIncludePath(const std::string& includePath) {
-    std::string p = includePath;
-    // Normalize separators to forward slash (GGPKManager::FindNodeByPath is
-    // case-insensitive but expects forward slashes).
-    for (auto& c : p) if (c == '\\') c = '/';
-    return p;
-}
-
-void ParseCsdRecursive(const std::string& rootPath,
-                       CsdFileReader reader,
-                       void* userData,
-                       CsdFormatMap& out) {
-    if (!reader) return;
-    std::unordered_set<std::string> visited;
-    std::vector<std::string> stack;
-    stack.push_back(NormalizeIncludePath(rootPath));
-
-    while (!stack.empty()) {
-        std::string path = std::move(stack.back());
-        stack.pop_back();
-        std::string keyLower = path;
-        std::transform(keyLower.begin(), keyLower.end(), keyLower.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (!visited.insert(keyLower).second) continue;
-
-        std::vector<uint8_t> bytes;
-        if (!reader(userData, path, bytes)) continue;
-        if (bytes.empty()) continue;
-
-        std::vector<std::string> includes;
-        ParseCsd(bytes.data(), bytes.size(), out, includes);
-        for (auto& inc : includes)
-            stack.push_back(NormalizeIncludePath(inc));
     }
 }
 

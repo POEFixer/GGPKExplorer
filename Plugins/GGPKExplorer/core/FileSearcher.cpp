@@ -1,48 +1,13 @@
 // Plugins/GGPKExplorer/core/FileSearcher.cpp
 #include "FileSearcher.h"
-#include <regex>
+#include "SearchQuery.h"
 #include <algorithm>
 #include <cctype>
 
 namespace GGPKExp {
 
-static std::string ToLower(const std::string& s) {
-    std::string r;
-    r.reserve(s.size());
-    for (unsigned char c : s) r += static_cast<char>(std::tolower(c));
-    return r;
-}
-
 FileSearcher::~FileSearcher() {
-    Cancel();
-    if (m_worker.joinable()) m_worker.join();
-}
-
-std::string FileSearcher::ExpandExtended(const std::string& pattern) const {
-    std::string result;
-    result.reserve(pattern.size());
-    for (size_t i = 0; i < pattern.size(); ++i) {
-        if (pattern[i] == '\\' && i + 1 < pattern.size()) {
-            char next = pattern[i + 1];
-            switch (next) {
-            case 'n': result += '\n'; i++; break;
-            case 'r': result += '\r'; i++; break;
-            case 't': result += '\t'; i++; break;
-            case '0': result += '\0'; i++; break;
-            case 'x':
-                if (i + 3 < pattern.size()) {
-                    result += static_cast<char>(std::stoi(pattern.substr(i + 2, 2), nullptr, 16));
-                    i += 3;
-                } else { result += pattern[i]; }
-                break;
-            case '\\': result += '\\'; i++; break;
-            default: result += pattern[i]; break;
-            }
-        } else {
-            result += pattern[i];
-        }
-    }
-    return result;
+    CancelAndJoin();
 }
 
 bool FileSearcher::MatchesFilter(const std::string& name, const std::string& filters) const {
@@ -50,7 +15,7 @@ bool FileSearcher::MatchesFilter(const std::string& name, const std::string& fil
 
     // Extract extension from name
     auto dot = name.rfind('.');
-    std::string ext = (dot != std::string::npos) ? ToLower(name.substr(dot)) : "";
+    std::string ext = (dot != std::string::npos) ? SearchToLower(name.substr(dot)) : "";
 
     // Parse filters: "*.txt *.json *.datc64" split by space
     std::string remaining = filters;
@@ -66,51 +31,16 @@ bool FileSearcher::MatchesFilter(const std::string& name, const std::string& fil
         // mask is like "*.txt" — extract the extension part
         auto maskDot = mask.rfind('.');
         if (maskDot != std::string::npos) {
-            std::string maskExt = ToLower(mask.substr(maskDot));
+            std::string maskExt = SearchToLower(mask.substr(maskDot));
             if (ext == maskExt) return true;
         }
     }
     return false;
 }
 
-bool FileSearcher::MatchesQuery(const std::string& name, const SearchOptions& opts) const {
-    std::string query = opts.query;
-    if (opts.mode == SearchMode::Extended)
-        query = ExpandExtended(query);
-
-    if (opts.mode == SearchMode::Regex) {
-        try {
-            auto flags = std::regex::ECMAScript | std::regex::optimize;
-            if (!opts.matchCase) flags |= std::regex::icase;
-            std::regex re(query, flags);
-            return std::regex_search(name, re);
-        } catch (...) {
-            return false;
-        }
-    }
-
-    std::string haystack = opts.matchCase ? name : ToLower(name);
-    std::string needle = opts.matchCase ? query : ToLower(query);
-
-    if (opts.matchWholeWord) {
-        size_t pos = 0;
-        while ((pos = haystack.find(needle, pos)) != std::string::npos) {
-            bool startOk = (pos == 0 || !std::isalnum(static_cast<unsigned char>(haystack[pos - 1])));
-            bool endOk = (pos + needle.size() >= haystack.size() ||
-                          !std::isalnum(static_cast<unsigned char>(haystack[pos + needle.size()])));
-            if (startOk && endOk) return true;
-            pos++;
-        }
-        return false;
-    }
-
-    return haystack.find(needle) != std::string::npos;
-}
-
 void FileSearcher::Start(const SearchOptions& opts, VirtualTree* tree,
                            bool searchFiles, bool searchFolders, bool searchByPath) {
-    Cancel();
-    if (m_worker.joinable()) m_worker.join();
+    CancelAndJoin();
 
     m_tree = tree;
     m_cancel.store(false);
@@ -121,11 +51,23 @@ void FileSearcher::Start(const SearchOptions& opts, VirtualTree* tree,
         m_result = SearchResult{};
     }
 
-    m_worker = std::thread(&FileSearcher::WorkerThread, this, opts, searchFiles, searchFolders, searchByPath);
+    try {
+        m_worker = std::thread(&FileSearcher::WorkerThread, this, opts, searchFiles, searchFolders, searchByPath);
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(m_resultMutex);
+        m_result.completed = true;
+        m_result.error = "could not start the search";
+        m_running.store(false);
+    }
 }
 
 void FileSearcher::Cancel() {
     m_cancel.store(true);
+}
+
+void FileSearcher::CancelAndJoin() {
+    Cancel();
+    if (m_worker.joinable()) m_worker.join();
 }
 
 SearchResult FileSearcher::GetResult() {
@@ -135,29 +77,41 @@ SearchResult FileSearcher::GetResult() {
 
 void FileSearcher::WorkerThread(SearchOptions opts, bool searchFiles, bool searchFolders, bool searchByPath) {
     SearchResult result;
-
-    if (!m_tree || opts.query.empty()) {
+    try {
+        Search(opts, searchFiles, searchFolders, searchByPath, result);
+    } catch (const std::exception& ex) {
+        result = SearchResult{};
         result.completed = true;
+        result.error = ex.what();
+    } catch (...) {
+        result = SearchResult{};
+        result.completed = true;
+        result.error = "unknown error";
+    }
+    {
         std::lock_guard<std::mutex> lock(m_resultMutex);
         m_result = std::move(result);
-        m_running.store(false);
+    }
+    m_running.store(false);
+}
+
+void FileSearcher::Search(const SearchOptions& opts, bool searchFiles, bool searchFolders, bool searchByPath,
+                          SearchResult& result) {
+    if (!m_tree || opts.query.empty()) {
+        result.completed = true;
         return;
     }
+
+    // The query once per search (not once per name): the regex compiled, the needle lowered.
+    const SearchQuery query(opts);
 
     // Collect all entries via internal tree walk (ignores expansion state)
     struct EntryInfo { std::string fullPath; std::string name; int64_t fileSize; bool isDirectory; };
     std::vector<EntryInfo> entries;
 
     if (opts.scopePaths.empty()) {
-        // Search entire tree — walk from root
-        const auto& flatList = m_tree->GetFlatList();
-        entries.reserve(flatList.size());
-        // For "entire tree" scope, we still need all entries.
-        // Use ForEachEntryUnder on each top-level node, but we need
-        // a way to walk everything. Walk root's children.
-        // Actually for empty scope, just walk all flat entries expanded from root.
-        // Better: walk the internal tree. We need root path.
-        // Simplest: treat empty scope as "match everything" in the filter below.
+        // Search entire tree — walk from root (an empty scope is the root's children).
+        entries.reserve(m_tree->GetFileCount() + m_tree->GetDirCount());
         m_tree->ForEachEntryUnder("", [&](const std::string& fullPath, const std::string& name,
                                            int64_t fileSize, bool isDir, void*) {
             entries.push_back({fullPath, name, fileSize, isDir});
@@ -193,8 +147,7 @@ void FileSearcher::WorkerThread(SearchOptions opts, bool searchFiles, bool searc
                 if (entry.fullPath.size() > scope.size() + 1 &&
                     entry.fullPath.compare(0, scope.size(), scope) == 0 &&
                     entry.fullPath[scope.size()] == '/') {
-                    std::string remainder = entry.fullPath.substr(scope.size() + 1);
-                    if (remainder.find('/') == std::string::npos)
+                    if (entry.fullPath.find('/', scope.size() + 1) == std::string::npos)
                         isDirect = true;
                 }
             }
@@ -207,9 +160,9 @@ void FileSearcher::WorkerThread(SearchOptions opts, bool searchFiles, bool searc
         // Match query against name and/or path
         bool matched = false;
         if ((searchFiles && !entry.isDirectory) || (searchFolders && entry.isDirectory))
-            matched = MatchesQuery(entry.name, opts);
+            matched = query.Matches(entry.name);
         if (!matched && searchByPath)
-            matched = MatchesQuery(entry.fullPath, opts);
+            matched = query.Matches(entry.fullPath);
         if (matched) {
             FileMatch fm;
             fm.fullPath = entry.fullPath;
@@ -225,10 +178,6 @@ void FileSearcher::WorkerThread(SearchOptions opts, bool searchFiles, bool searc
 
     result.totalFiles = static_cast<int>(result.fileMatches.size());
     result.completed = !result.cancelled;
-
-    std::lock_guard<std::mutex> lock(m_resultMutex);
-    m_result = std::move(result);
-    m_running.store(false);
 }
 
 } // namespace GGPKExp

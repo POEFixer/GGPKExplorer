@@ -12,7 +12,6 @@
 #include "../viewers/MatTableViewer.h"
 #include "../viewers/MeshViewer.h"
 #include "../viewers/PsgViewer.h"
-#include "../viewers/AocViewer.h"
 #include <imgui.h>
 
 namespace GGPKExp {
@@ -56,21 +55,18 @@ void ContentPanel::InitViewers()
     datViewer->SetDatEditorPanelWidth(m_cachedDatEditorPanelWidth);
     m_viewers[FileType::Dat] = std::move(datViewer);
 
-    auto terrViewer = std::make_unique<TerrainViewer>();
-    if (m_device)
-        terrViewer->Initialize(m_device);
-    m_viewers[FileType::Terrain] = std::move(terrViewer);
+    m_viewers[FileType::Terrain] = std::make_unique<TerrainViewer>();
 
     auto psgViewer = std::make_unique<PsgViewer>();
     psgViewer->SetContext(m_manager, m_schema, m_device, m_taskRunner);
     if (m_uiSettings) psgViewer->SetUiSettings(m_uiSettings);
     m_viewers[FileType::SkillTree] = std::move(psgViewer);
 
+    // The model view: .sm / .smd / .ast and .aoc (FileType::Aoc uses it too).
     auto meshViewer = std::make_unique<MeshViewer>();
     if (m_device)
         meshViewer->Initialize(m_device);
-    if (m_manager)
-        meshViewer->SetContext(m_manager, m_tree);
+    meshViewer->SetManager(m_manager);
     // Apply cached animation settings (set before viewer existed).
     if (m_animPanelState)
         meshViewer->SetAnimPanelState(m_animPanelState);
@@ -82,39 +78,11 @@ void ContentPanel::InitViewers()
         meshViewer->SetPlaybackSpeed(m_initialPlaybackSpeed);
     m_viewers[FileType::Mesh] = std::move(meshViewer);
 
-    auto aocViewer = std::make_unique<AocViewer>();
-    if (m_device)
-        aocViewer->Initialize(m_device);
-    if (m_manager)
-        aocViewer->SetContext(m_manager, m_tree);
-    if (m_schema) {
-        aocViewer->SetDatSchema(m_schema);
-    }
-    // Phase 4 — inject previous-selection provider so "Attach Selected Mesh"
-    // context menu in the Sockets tab can reach ContentPanel's state.
-    aocViewer->SetSelectionProvider([this]() -> GGPKExp::AocContentSelection {
-        auto ps = GetPreviousSelection();
-        GGPKExp::AocContentSelection out;
-        out.path  = std::move(ps.path);
-        out.bytes = std::move(ps.bytes);
-        return out;
-    });
-    // Apply cached animation settings (set before viewer existed).
-    if (m_animPanelState)
-        aocViewer->SetAnimPanelState(m_animPanelState);
-    if (m_playbackSpeedPtr)
-        aocViewer->SetPlaybackSpeedPtr(m_playbackSpeedPtr);
-    if (m_hasInitialPlaybackSpeed)
-        aocViewer->SetPlaybackSpeed(m_initialPlaybackSpeed);
-    if (!m_pluginDir.empty())
-        aocViewer->SetPluginDir(m_pluginDir);
-    m_viewers[FileType::Aoc] = std::move(aocViewer);
-
     m_viewersInitialized = true;
 }
 
 // ---------------------------------------------------------------------------
-// Animation settings forwarders — dispatch to MeshViewer + AocViewer.
+// Animation settings forwarders — dispatch to MeshViewer.
 // Cached when viewers don't exist yet; applied on InitViewers().
 // ---------------------------------------------------------------------------
 
@@ -123,8 +91,6 @@ void ContentPanel::SetAnimPanelState(GGPKExp::AnimationPanelState* state)
     m_animPanelState = state;
     if (auto* mv = dynamic_cast<MeshViewer*>(GetViewer(FileType::Mesh)))
         mv->SetAnimPanelState(state);
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc)))
-        av->SetAnimPanelState(state);
 }
 
 void ContentPanel::SetViewSettings(GGPKExp::MeshViewSettings* state)
@@ -136,30 +102,12 @@ void ContentPanel::SetViewSettings(GGPKExp::MeshViewSettings* state)
 
 bool ContentPanel::ConsumeUiSettingsDirty()
 {
-    bool m = false, a = false, p = false;
+    bool m = false, p = false;
     if (auto* mv = dynamic_cast<MeshViewer*>(GetViewer(FileType::Mesh)))
         m = mv->ConsumeUiSettingsDirty();
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc)))
-        a = av->ConsumeUiSettingsDirty();
     if (auto* pv = dynamic_cast<PsgViewer*>(GetViewer(FileType::SkillTree)))
         p = pv->ConsumeUiSettingsDirty();
-    return m || a || p;
-}
-
-float ContentPanel::GetCurrentPlaybackSpeed() const
-{
-    // Need a non-const path through m_viewers: dynamic_cast the raw pointer.
-    auto it = m_viewers.find(FileType::Mesh);
-    if (m_currentType == FileType::Mesh && it != m_viewers.end()) {
-        if (auto* mv = dynamic_cast<MeshViewer*>(it->second.get()))
-            return mv->GetPlaybackSpeed();
-    }
-    it = m_viewers.find(FileType::Aoc);
-    if (m_currentType == FileType::Aoc && it != m_viewers.end()) {
-        if (auto* av = dynamic_cast<AocViewer*>(it->second.get()))
-            return av->GetPlaybackSpeed();
-    }
-    return 1.0f;
+    return m || p;
 }
 
 void ContentPanel::SetInitialPlaybackSpeed(float s)
@@ -168,8 +116,6 @@ void ContentPanel::SetInitialPlaybackSpeed(float s)
     m_hasInitialPlaybackSpeed = true;
     if (auto* mv = dynamic_cast<MeshViewer*>(GetViewer(FileType::Mesh)))
         mv->SetPlaybackSpeed(s);
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc)))
-        av->SetPlaybackSpeed(s);
 }
 
 void ContentPanel::SetPlaybackSpeedPtr(float* ptr)
@@ -179,8 +125,6 @@ void ContentPanel::SetPlaybackSpeedPtr(float* ptr)
     // SetAnimPanelState above.
     if (auto* mv = dynamic_cast<MeshViewer*>(GetViewer(FileType::Mesh)))
         mv->SetPlaybackSpeedPtr(ptr);
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc)))
-        av->SetPlaybackSpeedPtr(ptr);
 }
 
 void ContentPanel::SetUiSettings(GGPKExp::GGPKExplorerUiSettings* settings)
@@ -191,13 +135,6 @@ void ContentPanel::SetUiSettings(GGPKExp::GGPKExplorerUiSettings* settings)
     }
 }
 
-void ContentPanel::SetPluginDir(const std::string& dir)
-{
-    m_pluginDir = dir;
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc)))
-        av->SetPluginDir(m_pluginDir);
-}
-
 void ContentPanel::SetDatSchema(DatSchema* schema)
 {
     const bool changed = schema != m_schema;
@@ -206,9 +143,6 @@ void ContentPanel::SetDatSchema(DatSchema* schema)
     // cached m_schema pointer on first lazy-init). A replaced schema stays
     // alive (GGPKExplorer keeps every one), so a viewer's or a worker's table
     // from the old one stays valid until it reloads.
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc))) {
-        av->SetDatSchema(m_schema);
-    }
     if (auto* pv = dynamic_cast<PsgViewer*>(GetViewer(FileType::SkillTree))) {
         pv->SetContext(m_manager, m_schema, m_device, m_taskRunner);
     }
@@ -272,15 +206,9 @@ void ContentPanel::SetD3DDevice(ID3D11Device* device)
     // If viewers already existed (re-init), update device-dependent viewers
     if (auto* iv = dynamic_cast<ImageViewer*>(GetViewer(FileType::Image)))
         iv->Initialize(device);
-    if (auto* tv = dynamic_cast<TerrainViewer*>(GetViewer(FileType::Terrain)))
-        tv->Initialize(device);
     if (auto* mv = dynamic_cast<MeshViewer*>(GetViewer(FileType::Mesh))) {
         mv->Initialize(device);
-        mv->SetContext(m_manager, m_tree);
-    }
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc))) {
-        av->Initialize(device);
-        av->SetContext(m_manager, m_tree);
+        mv->SetManager(m_manager);
     }
 }
 
@@ -295,10 +223,6 @@ void ContentPanel::SetVirtualTree(VirtualTree* tree)
     m_tree = tree;
     if (auto* dv = GetDatViewer())
         dv->SetTree(tree);
-    if (auto* mv = dynamic_cast<MeshViewer*>(GetViewer(FileType::Mesh)))
-        mv->SetContext(m_manager, tree);
-    if (auto* av = dynamic_cast<AocViewer*>(GetViewer(FileType::Aoc)))
-        av->SetContext(m_manager, tree);
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +233,12 @@ TextViewer* ContentPanel::GetTextViewer()
 {
     auto it = m_viewers.find(FileType::Text);
     return it != m_viewers.end() ? static_cast<TextViewer*>(it->second.get()) : nullptr;
+}
+
+bool ContentPanel::IsDatReferenceScanRunning() const
+{
+    auto it = m_viewers.find(FileType::Dat);
+    return it != m_viewers.end() && static_cast<const DatViewer*>(it->second.get())->IsReferenceScanRunning();
 }
 
 DatViewer* ContentPanel::GetDatViewer()
@@ -357,20 +287,6 @@ void ContentPanel::LoadFile(const std::string& path, const std::string& name,
 void ContentPanel::DoLoadFile(const std::string& path, const std::string& name,
                                int64_t size, FileType type, void* nodePtr)
 {
-    // Phase 4 — stash current → previous if it was Mesh (.sm) or Aoc (.aoc).
-    // Requires m_dataLoaded so bytes are already in m_fileData; if not yet
-    // loaded (tree node clicked but EnsureDataLoaded hasn't run), skip stashing.
-    // Also require non-empty bytes + no load error so AocViewer doesn't
-    // receive empty bytes from a prior failed read when Attach Selected
-    // Mesh is invoked on the new file.
-    if (m_dataLoaded && !m_currentPath.empty() &&
-        !m_fileData.empty() && m_loadError.empty() &&
-        (m_currentType == FileType::Mesh || m_currentType == FileType::Aoc)) {
-        m_previousPath     = m_currentPath;
-        m_previousFileType = m_currentType;
-        m_previousBytes    = m_fileData;   // copy — m_fileData is cleared below
-    }
-
     m_currentPath    = path;
     m_currentName    = name;
     m_currentSize    = size;
@@ -412,7 +328,7 @@ void ContentPanel::DoLoadFile(const std::string& path, const std::string& name,
     case FileType::TerrainMeta:   m_defaultTab = DefaultTab::TerrainMeta; break;
     case FileType::MatTable:      m_defaultTab = DefaultTab::MatTable; break;
     case FileType::SkillTree:     m_defaultTab = DefaultTab::SkillTree; break;
-    case FileType::Aoc:           m_defaultTab = DefaultTab::Aoc; break;
+    case FileType::Aoc:           m_defaultTab = DefaultTab::Mesh; break;
     default:                      m_defaultTab = DefaultTab::Hex;   break;
     }
 
@@ -454,10 +370,6 @@ void ContentPanel::Clear()
     for (auto& [ft, viewer] : m_viewers)
         viewer->Clear();
     m_viewerLoaded.clear();
-
-    m_previousPath.clear();
-    m_previousFileType = FileType::Unknown;
-    m_previousBytes.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -692,12 +604,12 @@ void ContentPanel::Render()
 
     // (Terrain grid heuristic removed — .tdt files detected by extension)
 
-    bool showMeshTab      = (m_currentType == FileType::Mesh);
+    bool showMeshTab      = (m_currentType == FileType::Mesh ||
+                             m_currentType == FileType::Aoc);
     bool showTerrainTab   = (m_currentType == FileType::Terrain);
     bool showTerrainMetaTab = (m_currentType == FileType::TerrainMeta);
     bool showMatTableTab  = (m_currentType == FileType::MatTable);
     bool showSkillTreeTab = (m_currentType == FileType::SkillTree);
-    bool showAocTab       = (m_currentType == FileType::Aoc);
 
     // Build per-tab flags for auto-selection on first render
     ImGuiTabItemFlags textTabFlags  = ImGuiTabItemFlags_None;
@@ -710,7 +622,6 @@ void ContentPanel::Render()
     ImGuiTabItemFlags terrainMetaTabFlags = ImGuiTabItemFlags_None;
     ImGuiTabItemFlags matTableTabFlags  = ImGuiTabItemFlags_None;
     ImGuiTabItemFlags skillTreeTabFlags = ImGuiTabItemFlags_None;
-    ImGuiTabItemFlags aocTabFlags       = ImGuiTabItemFlags_None;
 
     if (!m_tabSelectionApplied) {
         switch (m_defaultTab) {
@@ -724,7 +635,6 @@ void ContentPanel::Render()
         case DefaultTab::TerrainMeta: terrainMetaTabFlags = ImGuiTabItemFlags_SetSelected; break;
         case DefaultTab::MatTable:    matTableTabFlags = ImGuiTabItemFlags_SetSelected; break;
         case DefaultTab::SkillTree:  skillTreeTabFlags = ImGuiTabItemFlags_SetSelected; break;
-        case DefaultTab::Aoc:         aocTabFlags = ImGuiTabItemFlags_SetSelected; break;
         default: break;
         }
         m_tabSelectionApplied = true;
@@ -788,40 +698,6 @@ void ContentPanel::Render()
         return;
 
     // ------------------------------------------------------------------
-    // AOC tab — rendered first for .aoc files so it is the default.
-    // Text tab (below) still appears for .aoc, but AOC wins the default
-    // selection + leftmost position.
-    // ------------------------------------------------------------------
-    if (showAocTab) {
-        if (ImGui::BeginTabItem("AOC", nullptr, aocTabFlags)) {
-            if (!m_viewerLoaded[FileType::Aoc]) {
-                EnsureDataLoaded();
-                if (m_loadError.empty()) {
-                    if (auto* v = GetViewer(FileType::Aoc)) {
-                        v->LoadData(std::vector<uint8_t>(m_fileData), m_currentPath);
-                        if (auto* av = dynamic_cast<AocViewer*>(v)) {
-                            av->SetOnSave([this](const std::vector<uint8_t>& data) {
-                                if (m_manager && m_currentNodePtr) {
-                                    m_manager->WriteFile(m_currentNodePtr, data);
-                                }
-                            });
-                        }
-                    }
-                }
-                m_viewerLoaded[FileType::Aoc] = true;
-            }
-            if (!m_loadError.empty())
-                showLoadError();
-            else {
-                if (auto* v = GetViewer(FileType::Aoc)) {
-                    v->Render();
-                }
-            }
-            ImGui::EndTabItem();
-        }
-    }
-
-    // ------------------------------------------------------------------
     // Text tab — for Text/Shader types and heuristic-detected text files
     // ------------------------------------------------------------------
     if (showTextTab) {
@@ -840,18 +716,18 @@ void ContentPanel::Render()
                                     m_manager->WriteFile(m_currentNodePtr, data);
 
                                     // Keep in-memory copy fresh so other tabs
-                                    // (Hex, AOC reload) see the new bytes
+                                    // (Hex, the model reload) see the new bytes
                                     // without a round-trip through GGPK.
                                     m_fileData = data;
 
-                                    // For .aoc: push new bytes to AocViewer so
-                                    // the 3D Preview re-parses on next frame.
+                                    // For .aoc: push the new bytes to the model
+                                    // view so it re-resolves on the next frame.
                                     if (m_currentType == FileType::Aoc) {
-                                        if (auto* v = GetViewer(FileType::Aoc)) {
+                                        if (auto* v = GetViewer(FileType::Mesh)) {
                                             v->LoadData(std::vector<uint8_t>(data),
                                                          m_currentPath);
                                         }
-                                        m_viewerLoaded[FileType::Aoc] = true;
+                                        m_viewerLoaded[FileType::Mesh] = true;
                                     }
                                 }
                             });
@@ -1005,7 +881,7 @@ void ContentPanel::Render()
     }
 
     // ------------------------------------------------------------------
-    // Model tab (meshes + skeletons) — MeshViewer via IViewer map
+    // Model tab (meshes, skeletons, .aoc models) — MeshViewer via IViewer map
     // ------------------------------------------------------------------
     if (showMeshTab) {
         if (ImGui::BeginTabItem(I18n::TrId("tab_model"), nullptr, meshTabFlags)) {
@@ -1013,9 +889,8 @@ void ContentPanel::Render()
                 EnsureDataLoaded();
                 if (m_loadError.empty()) {
                     if (auto* mv = dynamic_cast<MeshViewer*>(GetViewer(FileType::Mesh))) {
-                        mv->SetContext(m_manager, m_tree);
-                        mv->LoadMesh(m_fileData, m_currentName, m_currentPath,
-                                     m_manager, m_tree);
+                        mv->SetManager(m_manager);
+                        mv->LoadData(std::vector<uint8_t>(m_fileData), m_currentPath);
                     }
                 }
                 m_viewerLoaded[FileType::Mesh] = true;

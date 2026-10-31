@@ -18,19 +18,8 @@ struct ResolvedBone {
     float       worldTransform[16] = {}; // composed: world = local * parent.world (row-vector)
 };
 
-// Virtual bones from .aoc sockets, layered on top of the FCNS-resolved bones.
-// Filled by AocSkeletonAugmenter; empty if no .aoc has been applied.
-struct VirtualBone {
-    std::string name;                  // from Socket.name
-    std::size_t parentBoneIndex = 0;   // index into ResolvedSkeleton.bones (always valid — orphans are skipped)
-    float       localTRS[16] = {};     // composed from socket translation/rotation/scale
-    float       worldTransform[16] = {}; // = localTRS × parent.worldTransform (row-vector convention)
-    std::string sourceAocPath;
-};
-
 struct ResolvedSkeleton {
     std::vector<ResolvedBone>  bones;         // same count and order as parsed.bones
-    std::vector<VirtualBone>   virtualBones;  // NEW: empty unless AocSkeletonAugmenter ran
     bool                       walkSucceeded = false; // false = malformed file (cycle, OOB, depth limit)
 };
 

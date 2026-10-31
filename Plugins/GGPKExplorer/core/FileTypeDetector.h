@@ -60,7 +60,7 @@ inline FileType DetectFileType(const std::string& name) {
     // Text (long list from spec)
     if (ext == ".txt" || ext == ".json" || ext == ".xml" || ext == ".html" ||
         ext == ".filter" || ext == ".lua" || ext == ".csv" || ext == ".atlas" ||
-        ext == ".ot" || ext == ".pet" || ext == ".sm" || ext == ".trl" ||
+        ext == ".ot" || ext == ".pet" || ext == ".trl" ||
         ext == ".act" || ext == ".ai" || ext == ".amd" ||
         ext == ".arm" || ext == ".cfg" || ext == ".env" || ext == ".epk" ||
         ext == ".it" || ext == ".mat" || ext == ".mtd" || ext == ".properties" ||

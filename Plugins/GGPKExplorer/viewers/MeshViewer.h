@@ -11,41 +11,31 @@
 #include "../core/parsers/AstParser.h"
 #include "../core/parsers/AstSkeletonBuilder.h"
 #include "../core/parsers/SmParser.h"
-#include "../core/parsers/AocTypes.h"
-#include "../core/parsers/AocResolver.h"
 #include "mesh/MeshCamera.h"
 #include "mesh/MeshRenderer.h"
 #include "mesh/MeshMaterial.h"
 #include "animation/AnimationPlayer.h"
 #include "animation/SkeletonBounds.h"
-#include "animation/TimelineUi.h"
 #include "../core/GGPKExplorerSettings.h"
 
 namespace GGPKExp {
 class GGPKManager;
-class VirtualTree;
 
+// The model view: a .sm (with its .smd, textures and skeleton), a bare .smd,
+// a skeleton-only .ast, or the main skin mesh and skeleton an .aoc names.
 class MeshViewer : public IViewer {
 public:
     ~MeshViewer() override = default;
 
     void Initialize(ID3D11Device* device);
-    void SetContext(GGPKManager* mgr, VirtualTree* tree);
+    void SetManager(GGPKManager* mgr) { m_mgr = mgr; }
 
-    // IViewer interface
+    // IViewer interface. `path` is the file's full GGPK path (its companion
+    // files are looked up next to it). Loading the open file's path again (an
+    // .aoc saved in the Text tab) keeps the camera, render mode and clip.
     void LoadData(std::vector<uint8_t> data, const std::string& path) override;
     void Clear() override;
     void Render() override;
-
-    // Extended load (with full path and GGPK context) — called by ContentPanel.
-    // Now a thin backward-compat wrapper around LoadData's async state machine.
-    bool LoadMesh(const std::vector<uint8_t>& data, const std::string& filename,
-                  const std::string& fullPath, GGPKManager* mgr, VirtualTree* tree);
-
-    // Async loading state machine
-    enum class MeshLoadState { Idle, Preparing, ReadingFiles, UploadingGpu, Ready, Error };
-
-    void TickLoadState();   // Called each Render — drives state machine
 
     // Plugin owns the shared view settings (Task 7); MeshViewer falls back
     // to a local static if not wired. Survives Clear() / model switches.
@@ -74,9 +64,11 @@ public:
         m_animPanelSettingsDirty = false;
         return was;
     }
-    float GetPlaybackSpeed() const { return m_animPlayer.Speed(); }
 
 private:
+    // Async loading state machine (driven once per Render, on the GUI thread)
+    enum class MeshLoadState { Idle, Preparing, ReadingFiles, UploadingGpu, Ready, Error };
+
     // Sub-components
     MeshRenderer m_renderer;
     MeshCamera m_camera;
@@ -100,39 +92,32 @@ private:
     // Empty for DOLm/V3+ meshes (their indices are already global).
     std::vector<int> m_boneRemap;
 
-    // Dev tool: force skinning palette to identity regardless of animation/remap.
-    // Useful for isolating skinning bugs vs vertex-decode bugs in 3D preview.
-    bool m_forceBindPose = false;
-
-    // --- .aoc overlay state (Sprint 3) ---
-    Parsers::AocDocument        m_aocDocument;
-    Parsers::AocResolverCache   m_aocResolverCache;
-    std::vector<std::string>    m_aocWarnings;
-    std::vector<uint8_t>        m_pendingAocBytes;
-    std::string                 m_pendingAocPath;      // auto-loaded path (or "" if none)
-    std::string                 m_manualAocPathInput;  // buffer for manual override dialog
-    bool                        m_showSockets = false;
-    bool                        m_showSocketNames = false;
-    bool                        m_showSocketParentLines = false;
-    bool                        m_manualAocDialogOpen = false;
+    // .aoc: the skin mesh (.sm) and skeleton (.ast) it names. The model shown
+    // is that .sm with the skeleton of the .aoc's ClientAnimationController.
+    bool        m_isAoc = false;
+    bool        m_aocNoMesh = false;   // the .aoc names no skin mesh
+    std::string m_aocSkinPath;
+    std::string m_aocSkeletonPath;
+    // The resolver's warnings: a parent that is missing or does not parse
+    // ends the chain, and what it named (the skin, the skeleton) is absent.
+    std::vector<std::string> m_aocWarnings;
 
     // Mesh state
     bool m_isSmFile = false;
-    bool m_hasSkinning = false;
-    std::string m_filename;
+    std::string m_path;       // full GGPK path of the file opened
+    std::string m_filename;   // its file name (shown above the view)
 
     // Per-mesh rig detection (2026-04-15). When a <basename>.ast companion file
     // exists next to the .sm (3,739 / 27,566 files — chests, corpses, props,
     // attachments, effects), the mesh has its OWN local skeleton rather than
     // sharing rig.ast with animated characters. Driven by the per-mesh rig
-    // load in DoMainThreadRead; used by RenderInfoTab to surface a banner and
-    // (potentially) by the animation gate if Play on static props misbehaves.
+    // load in DoMainThreadRead; shown in the Info tab.
     bool m_isStaticPropMesh = false;
     std::string m_rigSourceName;   // e.g. "bittersoncorpse01.ast" or "rig.ast" (basename only)
+    std::string m_skeletonError;   // why the skeleton found did not load (read / parse), for Info
 
     // Display toggles
     int m_renderMode = 0;  // 0=Solid, 1=Wire, 2=Solid+Wire
-    int m_activeTab = 0;   // 0=3D View, 1=Info
 
     // Computed world-space bone positions for visualization
     struct BoneVizData {
@@ -161,7 +146,6 @@ private:
 
     // Context (non-owning, lifetime guaranteed by GGPKExplorer)
     GGPKManager* m_mgr = nullptr;
-    VirtualTree* m_tree = nullptr;
 
     // Async loading state
     MeshLoadState m_loadState = MeshLoadState::Idle;
@@ -174,9 +158,21 @@ private:
     };
     MeshPendingInput m_pending;
 
+    // The view a reload of the same file keeps: LoadData captures it from the
+    // model shown, the next successful upload applies it, Clear() drops it.
+    struct KeptView {
+        bool        valid = false;
+        MeshCamera  camera;
+        int         renderMode = 0;
+        std::string clip;            // the selected clip's name
+        float       time = 0.0f;
+        bool        playing = false;
+    };
+    KeptView m_keptView;
+    void ApplyKeptView();
+
     // Byte buffers read in ReadingFiles phase, parsed+uploaded in UploadingGpu
     std::vector<uint8_t> m_smdBytes;
-    std::vector<uint8_t> m_smdHeaderBytes;
     std::vector<uint8_t> m_rigAstBytes;
 
     // Spinner rendering helper
@@ -188,16 +184,20 @@ private:
 
     void Render3DView();
     void RenderInfoTab();
-    std::string BuildInfoText() const;
+    // Up to `maxShown` of m_aocWarnings as warning lines (kAllWarnings: all).
+    static constexpr std::size_t kAllWarnings = static_cast<std::size_t>(-1);
+    void RenderAocWarnings(std::size_t maxShown) const;
+    std::string BuildInfoText() const;   // the Info tab's lines (also what Copy copies)
     void InitResolvedSkeleton();              // one-time — BuildResolvedSkeleton + initial bone-viz
     void RefreshBoneVizFromWorldTransforms(); // per-frame — reads bones[].worldTransform
-    static float HalfToFloat(uint16_t h);
 
-    // Sprint 3: .aoc overlay helpers
-    void TryAutoDiscoverAoc(const std::string& meshOrAstPath);
-    void ApplyPendingAoc();
-    void RenderManualAocDialog();
-    static std::string StripExtensionForAoc(const std::string& path);
+    // .aoc: resolves the extends chain and replaces m_pending with the skin
+    // mesh's .sm. False with m_error set when the .aoc cannot be read.
+    bool ResolveAocModel();
+    // Ends the load with one error line naming the file and the cause (an
+    // .aoc's line says it is its skin mesh that cannot be shown).
+    void FailMesh(const std::string& why);
+    void TickLoadState();
 };
 
 } // namespace GGPKExp

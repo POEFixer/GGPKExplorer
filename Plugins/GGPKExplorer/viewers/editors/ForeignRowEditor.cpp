@@ -51,13 +51,6 @@ std::string ToLowerAscii(const std::string& s) {
     return out;
 }
 
-// Extract the basename (everything after the last '/') and lowercase it.
-std::string LowerBasename(const std::string& path) {
-    size_t slash = path.find_last_of('/');
-    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
-    return ToLowerAscii(base);
-}
-
 // Resolve the GGPK path of a target DAT given its table name (e.g. "Stats").
 // Walks the virtual tree and matches the first file whose basename equals
 // "<refTable>.datc64" case-insensitively. This handles localized variants

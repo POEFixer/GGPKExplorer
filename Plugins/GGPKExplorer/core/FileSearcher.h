@@ -9,6 +9,8 @@
 
 namespace GGPKExp {
 
+class SearchQuery;
+
 class FileSearcher {
 public:
     ~FileSearcher();
@@ -16,15 +18,17 @@ public:
     void Start(const SearchOptions& opts, VirtualTree* tree,
                bool searchFiles, bool searchFolders, bool searchByPath = false);
     void Cancel();
+    /// Cancel and wait for the worker: before the tree is cleared.
+    void CancelAndJoin();
     bool IsRunning() const { return m_running.load(); }
     float GetProgress() const { return m_progress.load(); }
     SearchResult GetResult();
 
 private:
     void WorkerThread(SearchOptions opts, bool searchFiles, bool searchFolders, bool searchByPath);
-    bool MatchesQuery(const std::string& name, const SearchOptions& opts) const;
+    void Search(const SearchOptions& opts, bool searchFiles, bool searchFolders, bool searchByPath,
+                SearchResult& result);
     bool MatchesFilter(const std::string& name, const std::string& filters) const;
-    std::string ExpandExtended(const std::string& pattern) const;
 
     std::thread m_worker;
     std::atomic<bool> m_cancel{false};

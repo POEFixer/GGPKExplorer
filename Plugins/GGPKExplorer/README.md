@@ -13,12 +13,13 @@ export.
   - DAT tables (with a schema), with a cell editor and import/export;
   - images (DDS and others), text, hex;
   - PSG passive skill graphs and the skill tree;
-  - meshes (SMD), animations (AOC), materials (MAT tables), terrain;
+  - 3D models (.sm, .smd, .ast skeletons, and the model an .aoc names) with simple
+    animation playback; materials (MAT tables), terrain;
   - audio.
 - **Extract** files or folders and **Save As** into other formats.
 
 Browsing, searching and extracting never change the game files. Saving in the DAT editor,
-importing, saving in the Text tab and saving an AOC file DO write into the game content,
+importing and saving in the Text tab (an .aoc included) DO write into the game content,
 and those writes are flushed to disk automatically: back up your game folder before you
 save an edit, and expect the game's own file check to restore modified files.
 

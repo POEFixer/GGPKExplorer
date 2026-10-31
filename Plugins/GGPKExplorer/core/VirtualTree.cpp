@@ -149,6 +149,50 @@ void VirtualTree::ExpandTo(const std::string& path) {
     if (!m_rootNode || path.empty())
         return;
 
+    MarkAncestorsExpanded(path);
+    Relinearize();
+}
+
+// ---------------------------------------------------------------------------
+// Public: ExpandSubtree / CollapseSubtree
+// ---------------------------------------------------------------------------
+
+void VirtualTree::ExpandSubtree(const std::string& path) {
+    if (!m_rootNode || path.empty())
+        return;
+
+    MarkAncestorsExpanded(path);   // the ancestors and the folder itself, as ExpandTo
+    if (TreeNode* node = FindNode(path))
+        SetExpandedRecursive(*node, true);
+    Relinearize();
+}
+
+void VirtualTree::CollapseSubtree(const std::string& path) {
+    if (!m_rootNode || path.empty())
+        return;
+
+    if (TreeNode* node = FindNode(path))
+        SetExpandedRecursive(*node, false);
+    Relinearize();
+}
+
+void VirtualTree::SetExpandedRecursive(TreeNode& node, bool expanded) {
+    if (!node.isDirectory)
+        return;
+    // A folder without children is never marked expanded (ExpandNode leaves it as it is).
+    if (!expanded || !node.children.empty())
+        node.isExpanded = expanded;
+    for (auto& child : node.children) {
+        if (child->isDirectory)
+            SetExpandedRecursive(*child, expanded);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private: MarkAncestorsExpanded — ExpandTo's walk, without the relinearize
+// ---------------------------------------------------------------------------
+
+void VirtualTree::MarkAncestorsExpanded(const std::string& path) {
     // Split path by '/' and expand each ancestor directory.
     std::vector<std::string> parts;
     std::istringstream stream(path);
@@ -185,8 +229,6 @@ void VirtualTree::ExpandTo(const std::string& path) {
 
         current = found;
     }
-
-    Relinearize();
 }
 
 // ---------------------------------------------------------------------------
@@ -288,55 +330,6 @@ uint32_t VirtualTree::FindByPathInsensitive(const std::string& path) const {
         lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     auto itLower = m_pathIndexLower.find(lowered);
     return (itLower != m_pathIndexLower.end()) ? itLower->second : UINT32_MAX;
-}
-
-// ---------------------------------------------------------------------------
-// Public: GetPathIndexSize (diagnostic)
-// ---------------------------------------------------------------------------
-
-size_t VirtualTree::GetPathIndexSize() const {
-    // Prefer lowercase index (reflects "effective" size for case-insensitive
-    // lookups). Fall back to case-sensitive index if lowercase not built yet.
-    if (m_pathIndexLowerBuilt) return m_pathIndexLower.size();
-    return m_pathIndex.size();
-}
-
-// ---------------------------------------------------------------------------
-// Public: DebugFindKeysWithPrefix (diagnostic)
-// ---------------------------------------------------------------------------
-
-std::vector<std::string> VirtualTree::DebugFindKeysWithPrefix(
-    const std::string& loweredPrefix, size_t max) const
-{
-    std::vector<std::string> out;
-    if (max == 0) return out;
-
-    // Force-build the lowercase index if needed (mirrors FindByPathInsensitive).
-    if (!m_pathIndexLowerBuilt) {
-        m_pathIndexLower.clear();
-        m_pathIndexLower.reserve(m_flat.size());
-        for (size_t i = 0; i < m_flat.size(); ++i) {
-            std::string lower;
-            lower.reserve(m_flat[i].fullPath.size());
-            for (char c : m_flat[i].fullPath)
-                lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-            m_pathIndexLower.emplace(std::move(lower), static_cast<uint32_t>(i));
-        }
-        m_pathIndexLowerBuilt = true;
-    }
-
-    out.reserve(max);
-    for (const auto& kv : m_pathIndexLower) {
-        const std::string& key = kv.first;
-        if (loweredPrefix.empty() ||
-            (key.size() >= loweredPrefix.size() &&
-             key.compare(0, loweredPrefix.size(), loweredPrefix) == 0))
-        {
-            out.push_back(key);
-            if (out.size() >= max) break;
-        }
-    }
-    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +480,9 @@ void VirtualTree::SortChildren(TreeNode& node) {
 void VirtualTree::Relinearize() {
     m_flat.clear();
     m_pathIndex.clear();
+    // The lowercase index maps paths to flat indices too: rebuilt on its next lookup.
+    m_pathIndexLower.clear();
+    m_pathIndexLowerBuilt = false;
 
     if (!m_rootNode)
         return;

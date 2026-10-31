@@ -101,7 +101,8 @@ void PoseInterpolator::Sample(const AnimationClip& clip,
         // leave T/R/S at default (bind-pose identity). Single-keyframe arrays
         // produce a constant value. Multi-keyframe arrays interpolate.
         // `hasStaticPose` is informational only; the sampling decision is
-        // count-based (verified via AnimDump on witch attack1_2hsword).
+        // count-based (verified by dumping witch attack1_2hsword with the
+        // AnimDump dev tool, since removed).
         auto& c = cache[ti];
 
         if (!track.translation.empty()) {

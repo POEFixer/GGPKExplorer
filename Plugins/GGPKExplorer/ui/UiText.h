@@ -2,7 +2,7 @@
 // The explorer's chrome (GGPKExplorer.cpp and ui/) follows the program language (PluginI18n.h,
 // included by PluginSDK.h): every text a user reads there is a key of lang/en.json (lang/ru.json,
 // ... next to the DLL), drawn through I18n::Tr / TrF / TrId. The viewers (viewers/), the parsers
-// (core/), the developer tools (dev/) and the file log stay English.
+// (core/) and the file log stay English.
 //
 //   * Widgets whose label is their ImGui id take TrId ("<text>###<key>"); a label that needs its
 //     own id appends it: LabelId(I18n::Tr("search_match_case"), "ff_match_case").

@@ -19,10 +19,6 @@ class PsgIconCache {
 public:
     void Initialize(ID3D11Device* device, GGPKManager* manager);
 
-    // Load the given GGPK paths into GPU textures. Duplicates are skipped
-    // automatically. Missing or broken files are silently dropped.
-    void PreloadAll(const std::vector<std::string>& ggpkPaths);
-
     // Returns an ImTextureID suitable for ImGui::Image / AddImage, or 0 if the
     // icon was not loaded.
     ImTextureID Get(const std::string& ggpkPath) const;

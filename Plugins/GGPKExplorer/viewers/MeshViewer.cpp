@@ -2,16 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 
 #include "../core/GGPKManager.h"
-#include "../core/VirtualTree.h"
 #include "../core/parsers/AocTokenizer.h"
 #include "../core/parsers/AocParser.h"
-#include "../core/parsers/AocSkeletonAugmenter.h"
+#include "../core/parsers/AocResolver.h"
 #include "animation/MatrixMath.h"
 #include "animation/SkinningPalette.h"
 #include "animation/AnimationSidePanel.h"
@@ -37,12 +35,7 @@ GGPKExp::MeshViewSettings& FallbackViewSettings() {
 void MeshViewer::Initialize(ID3D11Device* device) {
     m_renderer.Initialize(device);
     m_material.Initialize(device);
-    m_material.CreateFallbackTextures();
-}
-
-void MeshViewer::SetContext(GGPKManager* mgr, VirtualTree* tree) {
-    m_mgr = mgr;
-    m_tree = tree;
+    m_material.CreateFallbackTexture();
 }
 
 void MeshViewer::Clear() {
@@ -53,10 +46,16 @@ void MeshViewer::Clear() {
     m_staticLocalBbox = {};
     m_smData = {};
     m_isSmFile = false;
-    m_hasSkinning = false;
+    m_path.clear();
     m_filename.clear();
+    m_isAoc = false;
+    m_aocNoMesh = false;
+    m_aocSkinPath.clear();
+    m_aocSkeletonPath.clear();
+    m_aocWarnings.clear();
     m_isStaticPropMesh = false;
     m_rigSourceName.clear();
+    m_skeletonError.clear();
     m_boneViz.clear();
 
     // Skinning caches are keyed to the previously loaded skeleton. If not
@@ -68,7 +67,6 @@ void MeshViewer::Clear() {
     m_bindInverseWorld.clear();
     m_skinningTruncationWarned = false;
     m_boneRemap.clear();
-    m_forceBindPose = false;
 
     // Phase 4.2: reset animation playback state.
     m_animPlayer.Reset();
@@ -79,32 +77,20 @@ void MeshViewer::Clear() {
     // Reset display state
     m_camera.Reset();
     m_renderMode = 0;
-    m_activeTab = 0;
     // NOTE: view toggles (Grid/Bones) live in m_viewSettings and survive
     // Clear() on purpose — user setting is remembered across model switches
     // and, once wired by the plugin, across sessions.
 
     m_material.Clear();
-    m_material.CreateFallbackTextures();
+    m_material.CreateFallbackTexture();
 
     // Reset async loading state
     m_loadState = MeshLoadState::Idle;
     m_prepareFrameDrawn = false;
     m_pending = {};
+    m_keptView = {};   // LoadData re-sets it after Clear() for a reload
     m_smdBytes.clear();
-    m_smdHeaderBytes.clear();
     m_rigAstBytes.clear();
-
-    // --- Sprint 3: reset .aoc overlay state ---
-    m_aocDocument = {};
-    m_aocWarnings.clear();
-    m_pendingAocBytes.clear();
-    m_pendingAocPath.clear();
-    m_manualAocPathInput.clear();
-    m_showSockets = false;
-    m_showSocketNames = false;
-    m_showSocketParentLines = false;
-    m_manualAocDialogOpen = false;
 }
 
 // -----------------------------------------------------------------------
@@ -112,7 +98,29 @@ void MeshViewer::Clear() {
 // -----------------------------------------------------------------------
 
 void MeshViewer::LoadData(std::vector<uint8_t> data, const std::string& path) {
+    // Loading the open file again (its .aoc saved in the Text tab) keeps the
+    // view the user set up: camera, render mode and clip by name. While no
+    // model is shown (the reload is not drawn yet, or an edit broke it) the
+    // view kept last time carries on to the next reload. Another file
+    // (ContentPanel clears the viewer on a file switch) starts fitted.
+    KeptView kept;
+    if (!path.empty() && path == m_path) {
+        if (m_loadState == MeshLoadState::Ready && m_renderer.GetVertexCount() > 0) {
+            kept.valid = true;
+            kept.camera = m_camera;
+            kept.renderMode = m_renderMode;
+            const std::size_t clip = m_animPlayer.SelectedAnimIndex();
+            if (clip < m_animPlayer.AnimNames().size()) {
+                kept.clip = m_animPlayer.AnimNames()[clip];
+                kept.time = m_animPlayer.CurrentTime();
+                kept.playing = m_animPlayer.IsPlaying();
+            }
+        } else {
+            kept = std::move(m_keptView);
+        }
+    }
     Clear();
+    m_keptView = std::move(kept);
     // Re-apply the persisted playback speed. Clear() -> Reset() already
     // preserves m_defaultSpeed inside the player, but the very first model
     // load after plugin start needs this to propagate the JSON-loaded value.
@@ -121,7 +129,9 @@ void MeshViewer::LoadData(std::vector<uint8_t> data, const std::string& path) {
     }
     m_pending.inputData = std::move(data);
     m_pending.path = path;
-    m_filename = path;
+    m_path = path;
+    const auto slash = path.find_last_of("/\\");
+    m_filename = (slash != std::string::npos) ? path.substr(slash + 1) : path;
 
     std::string ext;
     auto dot = path.rfind('.');
@@ -134,29 +144,100 @@ void MeshViewer::LoadData(std::vector<uint8_t> data, const std::string& path) {
 }
 
 // -----------------------------------------------------------------------
-// LoadMesh — backward-compat wrapper (called by ContentPanel). Delegates to
-// LoadData which drives the async state machine.
+// ResolveAocModel — the .aoc's main skin mesh and skeleton. Reads the .sm into
+// m_pending (as if it had been opened) and records the skeleton path.
 // -----------------------------------------------------------------------
 
-bool MeshViewer::LoadMesh(const std::vector<uint8_t>& data, const std::string& filename,
-                           const std::string& /*fullPath*/, GGPKManager* mgr,
-                           VirtualTree* tree) {
-    if (mgr) m_mgr = mgr;
-    if (tree) m_tree = tree;
-    LoadData(std::vector<uint8_t>(data), filename);
+bool MeshViewer::ResolveAocModel() {
+    const auto& bytes = m_pending.inputData;
+    auto tok = Parsers::TokenizeAoc(bytes.data(), bytes.size());
+    if (!tok) {
+        m_error = "AOC: " + tok.error;
+        return false;
+    }
+    auto leaf = Parsers::ParseAoc(tok.value);
+    if (!leaf) {
+        m_error = "AOC: " + leaf.error;
+        return false;
+    }
+    leaf.value.sourcePath = m_pending.path;
+    auto doc = Parsers::ResolveExtends(leaf.value, m_mgr);
+    if (!doc) {
+        m_error = "AOC: " + doc.error;
+        return false;
+    }
+
+    // A parent that is missing or does not parse ends the chain: what it
+    // would have named (the skin, the skeleton) is then absent. Kept for the
+    // view and the Info text.
+    m_aocWarnings = std::move(doc.value.warnings);
+
+    const Parsers::AocModelRefs refs = Parsers::FindModelRefs(doc.value.merged);
+    m_aocSkeletonPath = refs.skeletonPath;
+    if (refs.skinPath.empty()) {
+        m_aocNoMesh = true;
+        return true;
+    }
+
+    // The skin may be named with or without its extension: always <base>.sm.
+    std::string base = refs.skinPath;
+    const size_t dot = base.find_last_of('.');
+    const size_t slash = base.find_last_of("/\\");
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) base.resize(dot);
+    m_aocSkinPath = base + ".sm";
+
+    void* node = m_mgr->FindNodeByPath(m_aocSkinPath);
+    if (!node) {
+        FailMesh("Missing .sm at: " + m_aocSkinPath);
+        return false;
+    }
+    auto r = m_mgr->ReadFile(node);
+    if (!r || r.value.empty()) {
+        FailMesh("Failed to read .sm: " + m_aocSkinPath + (r.error.empty() ? "" : " -- " + r.error));
+        return false;
+    }
+    m_pending.inputData = std::move(r.value);
+    m_pending.path = m_aocSkinPath;
+    m_pending.ext = ".sm";
     return true;
 }
 
 // -----------------------------------------------------------------------
-// DoMainThreadRead — runs in the ReadingFiles phase. Reads .smd / .smd.header
-// / rig.ast from GGPK, then transitions to UploadingGpu.
+// FailMesh — the model cannot be shown: one error line names the file and the
+// cause instead of an empty canvas. For an .aoc it says that the skin mesh the
+// .aoc names is what is missing.
+// -----------------------------------------------------------------------
+
+void MeshViewer::FailMesh(const std::string& why) {
+    m_error = m_isAoc ? "No renderable skin mesh: " + why : why;
+    m_loadState = MeshLoadState::Error;
+}
+
+// -----------------------------------------------------------------------
+// DoMainThreadRead — runs in the ReadingFiles phase. Reads .smd and the
+// skeleton (.ast) from GGPK, then transitions to UploadingGpu.
 // -----------------------------------------------------------------------
 
 void MeshViewer::DoMainThreadRead() {
-    if (m_pending.inputData.empty() || !m_mgr || !m_tree) {
+    if (m_pending.inputData.empty() || !m_mgr) {
         m_error = "No data to load";
         m_loadState = MeshLoadState::Error;
         return;
+    }
+
+    // .aoc: swap the pending input for the .sm it names, then load that .sm
+    // (with the .aoc's own skeleton instead of the .sm's companion rig).
+    if (m_pending.ext == ".aoc") {
+        m_isAoc = true;
+        if (!ResolveAocModel()) {
+            m_loadState = MeshLoadState::Error;
+            return;
+        }
+        if (m_aocNoMesh) {
+            m_loaded = true;
+            m_loadState = MeshLoadState::Ready;
+            return;
+        }
     }
 
     const std::string& ext = m_pending.ext;
@@ -176,7 +257,7 @@ void MeshViewer::DoMainThreadRead() {
         // .ast effect files still render their skeleton in the 3D view.
         InitResolvedSkeleton();
 
-        // Phase 4.2: attach player + auto-play first animation (idempotent w/ AttachSkeleton's auto-play).
+        // Attach the player: it selects the default clip without playing it.
         m_animPlayer.AttachSkeleton(&m_skeleton);
 
         constexpr float kMaxCoordBone = 1e6f;
@@ -219,11 +300,6 @@ void MeshViewer::DoMainThreadRead() {
         m_staticLocalBbox.Include(m_mesh.bboxMin[0], m_mesh.bboxMin[1], m_mesh.bboxMin[2]);
         m_staticLocalBbox.Include(m_mesh.bboxMax[0], m_mesh.bboxMax[1], m_mesh.bboxMax[2]);
 
-        // --- Sprint 3: .aoc overlay for standalone .ast ---
-        TryAutoDiscoverAoc(m_pending.path);
-        ApplyPendingAoc();
-        if (!m_resolvedSkeleton.virtualBones.empty()) m_showSockets = true;
-
         m_loaded = true;
         m_loadState = MeshLoadState::Ready;
         return;
@@ -232,68 +308,92 @@ void MeshViewer::DoMainThreadRead() {
     m_isSmFile = (ext == ".sm");
 
     if (m_isSmFile) {
+        // The .sm names its mesh data (.smd); without it there is nothing to show.
         auto smResult = Parsers::ParseSm(data.data(), data.size());
-        if (smResult) m_smData = std::move(smResult.value);
+        if (!smResult) {
+            FailMesh("Failed to parse .sm: " + m_pending.path +
+                     (smResult.error.empty() ? "" : " -- " + smResult.error));
+            return;
+        }
+        m_smData = std::move(smResult.value);
 
-        if (!m_smData.smdPath.empty()) {
-            // Read .smd
-            if (void* smdNode = m_mgr->FindNodeByPath(m_smData.smdPath)) {
-                auto r = m_mgr->ReadFile(smdNode);
-                if (r) m_smdBytes = std::move(r.value);
+        void* smdNode = m_mgr->FindNodeByPath(m_smData.smdPath);
+        if (!smdNode) {
+            FailMesh("Missing .smd at: " + m_smData.smdPath);
+            return;
+        }
+        {
+            auto r = m_mgr->ReadFile(smdNode);
+            if (!r || r.value.empty()) {
+                FailMesh("Failed to read .smd: " + m_smData.smdPath +
+                         (r.error.empty() ? "" : " -- " + r.error));
+                return;
             }
-            // Read companion .smd.header (may or may not exist)
-            std::string headerPath = m_smData.smdPath + ".header";
-            if (void* hNode = m_mgr->FindNodeByPath(headerPath)) {
-                auto r = m_mgr->ReadFile(hNode);
-                if (r) m_smdHeaderBytes = std::move(r.value);
-            }
-            // Per-mesh rig discovery (2026-04-15):
-            //   1. Try <sm-basename>.ast in the .smd's directory — static props,
-            //      chests, attachments, effects have their OWN local skeleton.
-            //   2. Fall back to rig.ast — animated characters and monster bodies
-            //      share the directory's rig.
-            // The .sm basename (e.g. "bittersoncorpse01") differs from the .smd
-            // basename (which is hashed, e.g. "BitterSon01_StaticCorpse_cb7cfce7"),
-            // so we derive it from m_pending.path, not m_smData.smdPath.
-            // Signal verified on 27,566 .sm files: 13.6% have per-mesh .ast,
-            // 99.4% of those are single-clip static/trigger meshes — never
-            // /characters/.
-            auto lastSlash = m_smData.smdPath.rfind('/');
-            if (lastSlash != std::string::npos) {
-                const std::string dir = m_smData.smdPath.substr(0, lastSlash + 1);
+            m_smdBytes = std::move(r.value);
+        }
 
-                std::string smBase;
-                {
-                    const auto smSlash = m_pending.path.rfind('/');
-                    std::string smName = (smSlash != std::string::npos)
-                                         ? m_pending.path.substr(smSlash + 1)
-                                         : m_pending.path;
-                    const auto smDot = smName.rfind('.');
-                    smBase = (smDot != std::string::npos) ? smName.substr(0, smDot) : smName;
-                }
-
-                bool loadedLocal = false;
-                if (!smBase.empty()) {
-                    const std::string localAstPath = dir + smBase + ".ast";
-                    if (void* astNode = m_mgr->FindNodeByPath(localAstPath)) {
-                        auto r = m_mgr->ReadFile(astNode);
-                        if (r) {
-                            m_rigAstBytes = std::move(r.value);
-                            m_isStaticPropMesh = true;
-                            m_rigSourceName = smBase + ".ast";
-                            loadedLocal = true;
-                        }
+        // Per-mesh rig discovery (2026-04-15):
+        //   1. Try <sm-basename>.ast in the .smd's directory — static props,
+        //      chests, attachments, effects have their OWN local skeleton.
+        //   2. Fall back to rig.ast — animated characters and monster bodies
+        //      share the directory's rig.
+        // The .sm basename (e.g. "bittersoncorpse01") differs from the .smd
+        // basename (which is hashed, e.g. "BitterSon01_StaticCorpse_cb7cfce7"),
+        // so we derive it from m_pending.path, not m_smData.smdPath.
+        // Signal verified on 27,566 .sm files: 13.6% have per-mesh .ast,
+        // 99.4% of those are single-clip static/trigger meshes — never
+        // /characters/.
+        auto lastSlash = m_smData.smdPath.rfind('/');
+        if (m_isAoc) {
+            // The .aoc's ClientAnimationController names the skeleton
+            // (none: the mesh shows in bind pose).
+            if (!m_aocSkeletonPath.empty()) {
+                if (void* astNode = m_mgr->FindNodeByPath(m_aocSkeletonPath)) {
+                    auto r = m_mgr->ReadFile(astNode);
+                    if (r) {
+                        m_rigAstBytes = std::move(r.value);
+                        const auto s = m_aocSkeletonPath.find_last_of("/\\");
+                        m_rigSourceName = (s != std::string::npos)
+                            ? m_aocSkeletonPath.substr(s + 1) : m_aocSkeletonPath;
+                    } else {
+                        m_skeletonError = "read failed" + (r.error.empty() ? "" : ": " + r.error);
                     }
                 }
+            }
+        } else if (lastSlash != std::string::npos) {
+            const std::string dir = m_smData.smdPath.substr(0, lastSlash + 1);
 
-                if (!loadedLocal) {
-                    const std::string astPath = dir + "rig.ast";
-                    if (void* astNode = m_mgr->FindNodeByPath(astPath)) {
-                        auto r = m_mgr->ReadFile(astNode);
-                        if (r) {
-                            m_rigAstBytes = std::move(r.value);
-                            m_rigSourceName = "rig.ast";
-                        }
+            std::string smBase;
+            {
+                const auto smSlash = m_pending.path.rfind('/');
+                std::string smName = (smSlash != std::string::npos)
+                                     ? m_pending.path.substr(smSlash + 1)
+                                     : m_pending.path;
+                const auto smDot = smName.rfind('.');
+                smBase = (smDot != std::string::npos) ? smName.substr(0, smDot) : smName;
+            }
+
+            bool loadedLocal = false;
+            if (!smBase.empty()) {
+                const std::string localAstPath = dir + smBase + ".ast";
+                if (void* astNode = m_mgr->FindNodeByPath(localAstPath)) {
+                    auto r = m_mgr->ReadFile(astNode);
+                    if (r) {
+                        m_rigAstBytes = std::move(r.value);
+                        m_isStaticPropMesh = true;
+                        m_rigSourceName = smBase + ".ast";
+                        loadedLocal = true;
+                    }
+                }
+            }
+
+            if (!loadedLocal) {
+                const std::string astPath = dir + "rig.ast";
+                if (void* astNode = m_mgr->FindNodeByPath(astPath)) {
+                    auto r = m_mgr->ReadFile(astNode);
+                    if (r) {
+                        m_rigAstBytes = std::move(r.value);
+                        m_rigSourceName = "rig.ast";
                     }
                 }
             }
@@ -305,16 +405,6 @@ void MeshViewer::DoMainThreadRead() {
         m_error = "Unsupported extension: " + ext;
         m_loadState = MeshLoadState::Error;
         return;
-    }
-
-    // --- Sprint 3: auto-discover companion .aoc ---
-    {
-        std::string basePath;
-        if (!m_smData.smdPath.empty())       basePath = m_smData.smdPath;
-        else if (!m_pending.path.empty())    basePath = m_pending.path;
-        if (!basePath.empty()) {
-            TryAutoDiscoverAoc(basePath);
-        }
     }
 
     m_loadState = MeshLoadState::UploadingGpu;
@@ -330,19 +420,26 @@ void MeshViewer::DoMainThreadUpload() {
     if (!m_rigAstBytes.empty()) {
         auto r = Parsers::ParseAst(m_rigAstBytes.data(), m_rigAstBytes.size());
         if (r) m_skeleton = std::move(r.value);
+        else m_skeletonError = r.error.empty() ? std::string("does not parse") : r.error;
     }
 
     // Parse mesh bytes FIRST so we know submesh count before loading materials
     // (LoadAllMaterials expands run-length counts based on submesh count).
+    const std::string& smdPath = m_isSmFile ? m_smData.smdPath : m_pending.path;
     if (!m_smdBytes.empty()) {
         auto r = Parsers::ParseSmd(m_smdBytes.data(), m_smdBytes.size());
         if (r) {
             m_mesh = std::move(r.value);
         } else {
-            m_error = r.error.empty() ? "Failed to parse SMD mesh" : r.error;
-            m_loadState = MeshLoadState::Error;
+            FailMesh("Failed to parse .smd: " + smdPath + (r.error.empty() ? "" : " -- " + r.error));
             return;
         }
+    }
+    // No vertices and none declared: nothing to draw. (An .smd whose vertex
+    // format is not supported yet declares its count and gets the info page.)
+    if (m_mesh.vertices.empty() && m_mesh.vertexCount == 0) {
+        FailMesh("No geometry in .smd: " + smdPath);
+        return;
     }
 
     // Upload material textures — material loader reads GGPK directly (main thread only)
@@ -354,16 +451,16 @@ void MeshViewer::DoMainThreadUpload() {
         m_material.LoadAllMaterials(m_smData, submeshCount, m_mgr);
         auto& mats = m_material.GetMaterials();
         if (mats.empty() || !mats[0].loaded) {
-            m_material.LoadTextureFromSm(m_pending.inputData, m_mgr, m_tree);
+            m_material.LoadTextureFromSm(m_pending.inputData, m_mgr);
         }
     }
 
     if (m_mesh.vertices.empty()) {
+        // Declared vertices in a format not decoded yet: Render shows the info page.
         m_loaded = true;
         m_loadState = MeshLoadState::Ready;
         m_pending = {};
         m_smdBytes.clear(); m_smdBytes.shrink_to_fit();
-        m_smdHeaderBytes.clear(); m_smdHeaderBytes.shrink_to_fit();
         m_rigAstBytes.clear(); m_rigAstBytes.shrink_to_fit();
         return;
     }
@@ -398,14 +495,8 @@ void MeshViewer::DoMainThreadUpload() {
 
     InitResolvedSkeleton();
 
-    // Phase 4.2: attach player (.aoc apply path — skeleton may have gained virtual bones).
+    // Phase 4.2: attach player.
     m_animPlayer.AttachSkeleton(&m_skeleton);
-
-    // --- Sprint 3: apply pending .aoc overlay, if any ---
-    ApplyPendingAoc();
-    if (!m_resolvedSkeleton.virtualBones.empty()) {
-        m_showSockets = true;  // helpful default: auto-enable when sockets discovered
-    }
 
     m_camera.FitToBounds(m_mesh.bboxMin, m_mesh.bboxMax);
     m_staticLocalBbox = {};
@@ -414,13 +505,12 @@ void MeshViewer::DoMainThreadUpload() {
 
     m_loaded = true;
     m_loadState = MeshLoadState::Ready;
+    ApplyKeptView();
 
     // Free temporary byte buffers — GPU has them now
     m_pending = {};
     m_smdBytes.clear(); m_smdBytes.shrink_to_fit();
-    m_smdHeaderBytes.clear(); m_smdHeaderBytes.shrink_to_fit();
     m_rigAstBytes.clear(); m_rigAstBytes.shrink_to_fit();
-    m_pendingAocBytes.clear(); m_pendingAocBytes.shrink_to_fit();
 }
 
 // -----------------------------------------------------------------------
@@ -445,6 +535,31 @@ void MeshViewer::TickLoadState() {
         return;
     }
     // Idle / Ready / Error — no transition work
+}
+
+// -----------------------------------------------------------------------
+// ApplyKeptView — after a reload of the same file: the camera and render mode
+// as they were, and the clip of the same name (if the skeleton still has it)
+// at the same playhead, playing if it was.
+// -----------------------------------------------------------------------
+
+void MeshViewer::ApplyKeptView() {
+    if (!m_keptView.valid) return;
+    m_camera = m_keptView.camera;
+    m_renderMode = m_keptView.renderMode;
+    if (!m_keptView.clip.empty()) {
+        const auto& names = m_animPlayer.AnimNames();
+        const auto it = std::find(names.begin(), names.end(), m_keptView.clip);
+        if (it != names.end()) {
+            const auto clip = static_cast<std::size_t>(it - names.begin());
+            m_animPlayer.SelectAnimation(clip);
+            if (m_animPlayer.SelectedAnimIndex() == clip) {
+                if (m_keptView.time > 0.0f) m_animPlayer.SeekSeconds(m_keptView.time);
+                if (m_keptView.playing) m_animPlayer.Play();
+            }
+        }
+    }
+    m_keptView = {};
 }
 
 // -----------------------------------------------------------------------
@@ -598,10 +713,21 @@ void MeshViewer::Render() {
 
     if (!m_error.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Error: %s", m_error.c_str());
+        RenderAocWarnings(kAllWarnings);   // no Info tab here: all of them
         return;
     }
     if (!m_loaded) {
         ImGui::TextDisabled("No mesh data loaded");
+        return;
+    }
+    if (m_aocNoMesh) {
+        // A broken parent can be what lost the skin: then say so instead of
+        // claiming the .aoc names none.
+        if (m_aocWarnings.empty())
+            ImGui::TextDisabled("This .aoc file names no skin mesh.");
+        else
+            ImGui::TextDisabled("No skin mesh found: the extends chain could not be fully resolved.");
+        RenderAocWarnings(kAllWarnings);
         return;
     }
 
@@ -635,12 +761,10 @@ void MeshViewer::Render() {
     // or mesh-only (.smd). Skeleton-only files display the bone hierarchy there.
     if (ImGui::BeginTabBar("##MeshViewerTabs")) {
         if (ImGui::BeginTabItem("3D View")) {
-            m_activeTab = 0;
             Render3DView();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Info")) {
-            m_activeTab = 1;
             RenderInfoTab();
             ImGui::EndTabItem();
         }
@@ -666,7 +790,7 @@ void MeshViewer::Render3DView() {
     // non-identity palette displaces them -> visible shards.
     const bool wantApplyFrame =
         m_animPlayer.SelectedAnimIndex() != static_cast<std::size_t>(-1) &&
-        (m_animPlayer.IsAnyLayerPlaying() || m_animPlayer.BaseLayerTime() > 0.0f);
+        (m_animPlayer.IsPlaying() || m_animPlayer.CurrentTime() > 0.0f);
     if (wantApplyFrame) {
         m_animPlayer.ApplyFrame(m_resolvedSkeleton);
         RefreshBoneVizFromWorldTransforms();
@@ -703,14 +827,6 @@ void MeshViewer::Render3DView() {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "[textured]");
     }
-    {
-        bool anyNormal = false;
-        for (auto& mt : m_material.GetMaterials()) if (mt.normalLoaded) { anyNormal = true; break; }
-        if (anyNormal) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.5f, 0.7f, 1.0f, 1.0f), "[normal mapped]");
-        }
-    }
 
     GGPKExp::MeshViewSettings& vs =
         m_viewSettings ? *m_viewSettings : FallbackViewSettings();
@@ -725,51 +841,18 @@ void MeshViewer::Render3DView() {
         if (ImGui::Checkbox("Bones", &vs.showBones)) m_animPanelSettingsDirty = true;
         ImGui::SameLine();
     }
-    if (!m_resolvedSkeleton.virtualBones.empty()) {
-        ImGui::Checkbox("Sockets", &m_showSockets);
-        ImGui::SameLine();
-    }
     if (ImGui::SmallButton("Reset View")) {
         m_camera.FitToBounds(m_mesh.bboxMin, m_mesh.bboxMax);
     }
 
-    // --- Sprint 3: .aoc overlay status + controls ---
-    if (!m_resolvedSkeleton.virtualBones.empty() || !m_aocWarnings.empty() || !m_pendingAocPath.empty()) {
-        if (m_showSockets) {
-            ImGui::Checkbox("Socket Names", &m_showSocketNames);
-            ImGui::SameLine();
-            ImGui::Checkbox("Socket->Parent Lines", &m_showSocketParentLines);
-            ImGui::SameLine();
-        }
-        ImGui::Text("Bones: %zu  Sockets: %zu",
-                    m_resolvedSkeleton.bones.size(),
-                    m_resolvedSkeleton.virtualBones.size());
-        if (!m_aocWarnings.empty()) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "  %zu AOC warnings", m_aocWarnings.size());
-            if (ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip();
-                int maxShow = 15;
-                for (const auto& w : m_aocWarnings) {
-                    if (--maxShow < 0) { ImGui::Text("... (more)"); break; }
-                    ImGui::TextUnformatted(w.c_str());
-                }
-                ImGui::EndTooltip();
-            }
-        }
-        ImGui::Text("Overlay: %s", m_pendingAocPath.empty() ? "(none)" : m_pendingAocPath.c_str());
-        ImGui::SameLine();
-        if (ImGui::SmallButton("...##aoc")) {
-            m_manualAocPathInput = m_pendingAocPath;
-            if (m_manualAocPathInput.size() >= 256) m_manualAocPathInput.resize(255);
-            m_manualAocDialogOpen = true;
-        }
-    }
-    RenderManualAocDialog();
+    // An .aoc that names no skeleton shows its mesh in bind pose; when the
+    // extends chain broke, the skeleton may have been in the lost parent.
+    if (m_isAoc && m_aocSkeletonPath.empty())
+        RenderAocWarnings(1);
 
     // Task 6: reserve a right-side strip for the animation panel when the
-    // skeleton ships any animations. Panel state is shared with AocViewer
-    // via the plugin; fall back to a local default if the plugin hasn't
+    // skeleton ships any animations. Panel state is owned (and persisted) by
+    // the plugin; fall back to a local default if the plugin hasn't
     // wired it up yet (defensive).
     static GGPKExp::AnimationPanelState s_fallbackPanelState;
     GGPKExp::AnimationPanelState& panelState =
@@ -794,49 +877,6 @@ void MeshViewer::Render3DView() {
 
     // Camera input (uses IsItemHovered internally)
     m_camera.ProcessInput(canvasPos, canvasSize);
-
-    bool hovered = ImGui::IsItemHovered();
-    ImVec2 mousePos = ImGui::GetIO().MousePos;
-
-    // Vertex hover info
-    if (hovered && m_loaded && !m_mesh.vertices.empty()) {
-        float bestDist = 100.0f;
-        int bestIdx = -1;
-        float hvVP[16];
-        float hvAspect = canvasSize.x / canvasSize.y;
-        m_camera.BuildVPMatrix(hvVP, hvAspect);
-
-        size_t step = m_mesh.vertices.size() > 5000 ? m_mesh.vertices.size() / 5000 : 1;
-        for (size_t i = 0; i < m_mesh.vertices.size(); i += step) {
-            auto& v = m_mesh.vertices[i];
-            if (!std::isfinite(v.x) || std::fabs(v.x) > 1e6f) continue;
-            float x = v.x*hvVP[0] + v.y*hvVP[4] + v.z*hvVP[8] + hvVP[12];
-            float y = v.x*hvVP[1] + v.y*hvVP[5] + v.z*hvVP[9] + hvVP[13];
-            float w = v.x*hvVP[3] + v.y*hvVP[7] + v.z*hvVP[11] + hvVP[15];
-            if (w < 0.001f) continue;
-            float sx = canvasPos.x + (x/w * 0.5f + 0.5f) * canvasSize.x;
-            float sy = canvasPos.y + (-y/w * 0.5f + 0.5f) * canvasSize.y;
-            float dx = sx - mousePos.x, dy = sy - mousePos.y;
-            float d = dx*dx + dy*dy;
-            if (d < bestDist * bestDist) {
-                bestDist = std::sqrt(d);
-                bestIdx = static_cast<int>(i);
-            }
-        }
-
-        if (bestIdx >= 0 && bestDist < 15.0f) {
-            auto& v = m_mesh.vertices[bestIdx];
-            ImGui::BeginTooltip();
-            ImGui::Text("Vertex %d", bestIdx);
-            ImGui::Text("Pos: (%.2f, %.2f, %.2f)", v.x, v.y, v.z);
-            float u = HalfToFloat(v.uvRaw[0]), uv = HalfToFloat(v.uvRaw[1]);
-            ImGui::Text("UV: (%.4f, %.4f)", u, uv);
-            ImGui::Text("Bones: [%d %d %d %d] w[%d %d %d %d]",
-                v.boneData[0], v.boneData[1], v.boneData[2], v.boneData[3],
-                v.boneData[4], v.boneData[5], v.boneData[6], v.boneData[7]);
-            ImGui::EndTooltip();
-        }
-    }
 
     // Render 3D scene to offscreen target
     int cw = static_cast<int>(canvasSize.x);
@@ -883,14 +923,6 @@ void MeshViewer::Render3DView() {
         // for V01/V02 vertices.
     }
 
-    // Dev override: force palette to identity for all slots.
-    if (m_forceBindPose) {
-        static constexpr std::array<float, 16> kIdentityAll = {
-            1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1
-        };
-        for (auto& m : m_skinningMatrices) m = kIdentityAll;
-    }
-
     const float* palettePtr = nullptr;
     std::size_t  paletteCount = 0;
     if (!m_skinningMatrices.empty()) {
@@ -898,7 +930,7 @@ void MeshViewer::Render3DView() {
         paletteCount = m_skinningMatrices.size();
     }
     m_renderer.RenderScene(cw, ch, m_camera, m_material, m_mesh, m_renderMode,
-                           m_hasSkinning, palettePtr, paletteCount);
+                           palettePtr, paletteCount);
 
     // Display the rendered texture
     if (m_renderer.GetRenderTargetSRV()) {
@@ -990,37 +1022,6 @@ void MeshViewer::Render3DView() {
                 dl->AddCircleFilled(bp, 3.0f, jointCol);
             }
         }
-
-        // --- Sprint 3: .aoc sockets overlay ---
-        if (m_showSockets && !m_resolvedSkeleton.virtualBones.empty()) {
-            const ImU32 colSocket = IM_COL32(0, 220, 220, 255);   // cyan
-            const ImU32 colLine   = IM_COL32(0, 220, 220, 160);
-
-            for (const auto& vb : m_resolvedSkeleton.virtualBones) {
-                const float wx = vb.worldTransform[12];
-                const float wy = vb.worldTransform[13];
-                const float wz = vb.worldTransform[14];
-                if (!std::isfinite(wx) || !std::isfinite(wy) || !std::isfinite(wz)) continue;
-
-                ImVec2 sp = project(wx, wy, wz);
-                const float r = 4.0f;
-                dl->AddLine(ImVec2(sp.x - r, sp.y),     ImVec2(sp.x,     sp.y - r), colSocket, 1.5f);
-                dl->AddLine(ImVec2(sp.x,     sp.y - r), ImVec2(sp.x + r, sp.y),     colSocket, 1.5f);
-                dl->AddLine(ImVec2(sp.x + r, sp.y),     ImVec2(sp.x,     sp.y + r), colSocket, 1.5f);
-                dl->AddLine(ImVec2(sp.x,     sp.y + r), ImVec2(sp.x - r, sp.y),     colSocket, 1.5f);
-
-                if (m_showSocketNames) {
-                    dl->AddText(ImVec2(sp.x + 6, sp.y - 6), colSocket, vb.name.c_str());
-                }
-                if (m_showSocketParentLines && vb.parentBoneIndex < m_boneViz.size()) {
-                    const auto& pb = m_boneViz[vb.parentBoneIndex];
-                    if (std::isfinite(pb.worldPos[0])) {
-                        ImVec2 pp = project(pb.worldPos[0], pb.worldPos[1], pb.worldPos[2]);
-                        dl->AddLine(pp, sp, colLine, 1.0f);
-                    }
-                }
-            }
-        }
     }
 
     // Task 6: right-anchored animation panel. Uses the horizontal space
@@ -1041,634 +1042,107 @@ void MeshViewer::Render3DView() {
 }
 
 // -----------------------------------------------------------------------
-// Info tab
+// RenderAocWarnings — the .aoc resolver's warnings (a parent of the extends
+// chain that is missing, does not parse, a cycle, the depth limit), at most
+// `maxShown` of them; the Info tab lists them all.
+// -----------------------------------------------------------------------
+
+void MeshViewer::RenderAocWarnings(std::size_t maxShown) const {
+    if (m_aocWarnings.empty() || maxShown == 0) return;
+    const ImVec4 kWarnColor(1.0f, 0.75f, 0.3f, 1.0f);
+    const std::size_t shown = (std::min)(maxShown, m_aocWarnings.size());
+    ImGui::PushTextWrapPos(0.0f);
+    for (std::size_t i = 0; i < shown; ++i)
+        ImGui::TextColored(kWarnColor, "Warning: %s", m_aocWarnings[i].c_str());
+    if (shown < m_aocWarnings.size())
+        ImGui::TextDisabled("%zu more in the Info tab.", m_aocWarnings.size() - shown);
+    ImGui::PopTextWrapPos();
+}
+
+// -----------------------------------------------------------------------
+// Info tab — the file, its counts, skeleton and textures; Copy copies them.
 // -----------------------------------------------------------------------
 
 void MeshViewer::RenderInfoTab() {
-    if (ImGui::SmallButton("Copy All")) {
-        std::string text = BuildInfoText();
+    const std::string text = BuildInfoText();
+    if (ImGui::SmallButton("Copy")) {
         ImGui::SetClipboardText(text.c_str());
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(copies info as text to clipboard)");
-
-    // Static-prop banner (Option C, 2026-04-15): surface the per-mesh-rig
-    // detection so the user understands why Play may behave differently on
-    // this mesh (single-pose "once"/"open" clip vs. full idle loop on
-    // shared-rig characters). Amber matches existing "warning" tone.
-    if (m_isStaticPropMesh && !m_rigSourceName.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.25f, 1.0f));
-        ImGui::TextWrapped("Static prop mesh: uses local skeleton %s",
-                           m_rigSourceName.c_str());
-        ImGui::PopStyleColor();
-        ImGui::TextDisabled(
-            "(not the shared rig.ast; animation is single-pose / event-triggered,"
-            " not an idle loop)");
-        ImGui::Separator();
-    }
-
-    ImGui::BeginChild("##InfoScroll", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-
-    // --- Mesh Data (.smd) ---
-    if (ImGui::CollapsingHeader("Mesh Data (.smd)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Indent(8.0f);
-        ImGui::Text("Version: v%02u%s", m_mesh.version, m_mesh.version >= 3 ? " (DOLm)" : "");
-        ImGui::Text("Vertices: %u", m_mesh.vertexCount);
-        ImGui::Text("Triangles: %u", m_mesh.triangleCount);
-        ImGui::Text("Indices: %zu", m_mesh.indices.size());
-        if (m_mesh.detectedStride > 0)
-            ImGui::Text("Vertex stride: %u bytes", m_mesh.detectedStride);
-        if (m_mesh.boneCount > 0)
-            ImGui::Text("Bones: %u", m_mesh.boneCount);
-        if (m_mesh.blendCount > 0)
-            ImGui::Text("Blend shapes: %u", m_mesh.blendCount);
-        if (!m_mesh.submeshName.empty())
-            ImGui::Text("Submesh: %s", m_mesh.submeshName.c_str());
-        if (m_mesh.version >= 3) {
-            ImGui::TextDisabled("DOLm offset: %u, DOLm version: %u, bone entries: %u, submeshes: %u",
-                m_mesh.dolmOffset, m_mesh.dolmVersion, m_mesh.boneDataEntryCount, m_mesh.submeshCount);
-        }
-        ImGui::Separator();
-        ImGui::Text("Bounding Box:");
-        ImGui::Text("  Min: (%.4f, %.4f, %.4f)", m_mesh.bboxMin[0], m_mesh.bboxMin[1], m_mesh.bboxMin[2]);
-        ImGui::Text("  Max: (%.4f, %.4f, %.4f)", m_mesh.bboxMax[0], m_mesh.bboxMax[1], m_mesh.bboxMax[2]);
-        float dx = m_mesh.bboxMax[0] - m_mesh.bboxMin[0];
-        float dy = m_mesh.bboxMax[1] - m_mesh.bboxMin[1];
-        float dz = m_mesh.bboxMax[2] - m_mesh.bboxMin[2];
-        ImGui::Text("  Size: %.2f x %.2f x %.2f", dx, dy, dz);
-        ImGui::Unindent(8.0f);
-    }
-
-    // --- SM Descriptor ---
-    if (m_isSmFile && !m_smData.smdPath.empty()) {
-        if (ImGui::CollapsingHeader("SM Descriptor (.sm)", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Indent(8.0f);
-            ImGui::Text("SM version: %u", m_smData.version);
-            ImGui::Text("Mesh path: %s", m_smData.smdPath.c_str());
-            if (!m_rigSourceName.empty()) {
-                if (m_isStaticPropMesh) {
-                    ImGui::Text("Rig source: ");
-                    ImGui::SameLine(0.0f, 0.0f);
-                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                                       "%s (local)", m_rigSourceName.c_str());
-                } else {
-                    ImGui::Text("Rig source: %s (shared)", m_rigSourceName.c_str());
-                }
-            }
-            if (m_smData.boneGroupCount > 0)
-                ImGui::Text("Bone groups: %u", m_smData.boneGroupCount);
-
-            ImGui::Separator();
-            auto& mats = m_material.GetMaterials();
-            ImGui::Text("Materials (%zu):", m_smData.materialPaths.size());
-            // Note: `mats` is the per-submesh expansion (size == submeshCount),
-            // not 1:1 with the raw material entries. Find loaded/ddsPath/normal
-            // info by matching matPath against the current entry's .path.
-            for (size_t i = 0; i < m_smData.materialPaths.size(); ++i) {
-                const char* pathStr = m_smData.materialPaths[i].path.c_str();
-                uint32_t runLen = m_smData.materialPaths[i].submeshCount;
-
-                bool loaded = false;
-                bool hasNormal = false;
-                std::string ddsPath;
-                std::string normalDdsPath;
-                for (const auto& mt : mats) {
-                    if (mt.matPath == m_smData.materialPaths[i].path) {
-                        if (mt.loaded) {
-                            loaded = true;
-                            if (ddsPath.empty()) ddsPath = mt.ddsPath;
-                        }
-                        if (mt.normalLoaded) {
-                            hasNormal = true;
-                            if (normalDdsPath.empty()) normalDdsPath = mt.normalDdsPath;
-                        }
-                        if (loaded && hasNormal) break;
-                    }
-                }
-
-                if (loaded)
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
-                        "  [%zu] %s  x%u submesh%s", i, pathStr, runLen, runLen == 1 ? "" : "es");
-                else
-                    ImGui::Text("  [%zu] %s  x%u submesh%s", i, pathStr, runLen, runLen == 1 ? "" : "es");
-
-                if (!ddsPath.empty()) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("-> %s", ddsPath.c_str());
-                }
-                if (hasNormal) {
-                    ImGui::TextColored(ImVec4(0.5f, 0.7f, 1.0f, 1.0f), "       normal: %s",
-                        normalDdsPath.c_str());
-                }
-            }
-
-            if (!m_mesh.submeshRanges.empty() && m_mesh.submeshRanges.size() > 1) {
-                ImGui::Separator();
-                ImGui::Text("Submesh ranges (%zu):", m_mesh.submeshRanges.size());
-                for (size_t i = 0; i < m_mesh.submeshRanges.size(); ++i) {
-                    auto& r = m_mesh.submeshRanges[i];
-                    ImGui::Text("  [%zu] %u indices (offset %u), %u vertices (offset %u)",
-                        i, r.indexCount, r.indexOffset, r.vertexCount, r.vertexOffset);
-                }
-            }
-
-            if (m_smData.bboxMin[0] != 0 || m_smData.bboxMax[0] != 0) {
-                ImGui::Separator();
-                ImGui::Text("SM Bounding Box:");
-                ImGui::Text("  Min: (%.4f, %.4f, %.4f)", m_smData.bboxMin[0], m_smData.bboxMin[1], m_smData.bboxMin[2]);
-                ImGui::Text("  Max: (%.4f, %.4f, %.4f)", m_smData.bboxMax[0], m_smData.bboxMax[1], m_smData.bboxMax[2]);
-            }
-            ImGui::Unindent(8.0f);
-        }
-    }
-
-    // --- Texture Pipeline ---
-    if (m_isSmFile) {
-        auto& texInfo = m_material.GetTexInfo();
-        if (ImGui::CollapsingHeader("Texture Pipeline", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Indent(8.0f);
-
-            if (!texInfo.matPath.empty()) {
-                ImGui::Text("Material: %s", texInfo.matPath.c_str());
-                if (texInfo.matFound) {
-                    ImGui::SameLine();
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "(%zu bytes)", texInfo.matSize);
-                } else {
-                    ImGui::SameLine();
-                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "NOT FOUND");
-                }
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "No .mat path found in .sm");
-            }
-
-            if (!texInfo.matJsonError.empty()) {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "JSON error: %s", texInfo.matJsonError.c_str());
-            }
-
-            if (!texInfo.allDdsPaths.empty()) {
-                ImGui::Separator();
-                ImGui::Text("DDS textures found (%zu):", texInfo.allDdsPaths.size());
-                for (size_t i = 0; i < texInfo.allDdsPaths.size(); ++i) {
-                    bool isSelected = (texInfo.allDdsPaths[i] == texInfo.selectedDdsPath);
-                    if (isSelected)
-                        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "  > %s", texInfo.allDdsPaths[i].c_str());
-                    else
-                        ImGui::Text("    %s", texInfo.allDdsPaths[i].c_str());
-                }
-            }
-
-            if (!texInfo.selectedDdsPath.empty()) {
-                ImGui::Separator();
-                ImGui::Text("Active texture: %s", texInfo.selectedDdsPath.c_str());
-                if (texInfo.ddsFound) {
-                    ImGui::Text("  File: %zu bytes", texInfo.ddsSize);
-                    if (texInfo.gpuLoaded) {
-                        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "  GPU: loaded OK");
-                    } else if (!texInfo.gpuError.empty()) {
-                        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "  GPU: %s", texInfo.gpuError.c_str());
-                    }
-                } else {
-                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "  NOT FOUND in GGPK");
-                }
-            }
-
-            auto& texLog = m_material.GetTexLog();
-            if (!texLog.empty()) {
-                ImGui::Separator();
-                ImGui::TextDisabled("Raw log: %s", texLog.c_str());
-            }
-
-            ImGui::Unindent(8.0f);
-        }
-    }
-
-    // --- Skeleton ---
-    if (!m_skeleton.bones.empty()) {
-        if (ImGui::CollapsingHeader("Skeleton")) {
-            ImGui::Indent(8.0f);
-            ImGui::Text("Bones: %zu (version: 0x%02X, header count: %u)",
-                        m_skeleton.bones.size(),
-                        static_cast<unsigned>(m_skeleton.version),
-                        static_cast<unsigned>(m_skeleton.boneCountHeader));
-
-            if (ImGui::BeginTable("##InfoBones", 4,
-                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
-                    ImVec2(0, 250.0f))) {
-                ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 30);
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("First Child", ImGuiTableColumnFlags_WidthFixed, 80);
-                ImGui::TableSetupColumn("Next Sibling", ImGuiTableColumnFlags_WidthFixed, 90);
-                ImGui::TableHeadersRow();
-                for (size_t i = 0; i < m_skeleton.bones.size(); ++i) {
-                    auto& b = m_skeleton.bones[i];
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn(); ImGui::Text("%zu", i);
-                    ImGui::TableNextColumn(); ImGui::TextUnformatted(b.name.c_str());
-                    ImGui::TableNextColumn();
-                    if (b.firstChildIndex == 0xFF) ImGui::TextDisabled("leaf");
-                    else ImGui::Text("%u", b.firstChildIndex);
-                    ImGui::TableNextColumn();
-                    if (b.nextSiblingIndex == 0xFF) ImGui::TextDisabled("last");
-                    else ImGui::Text("%u", b.nextSiblingIndex);
-                }
-                ImGui::EndTable();
-            }
-            ImGui::Unindent(8.0f);
-        }
-    }
-
-    // --- Animations ---
-    if (!m_skeleton.animations.empty()) {
-        if (ImGui::CollapsingHeader("Animations", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Indent(8.0f);
-            ImGui::Text("Clips: %zu", m_skeleton.animations.size());
-            if (ImGui::BeginTable("##InfoAnims", 3,
-                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
-                    ImVec2(0, 200.0f))) {
-                ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 30);
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("Bones", ImGuiTableColumnFlags_WidthFixed, 60);
-                ImGui::TableHeadersRow();
-                for (size_t i = 0; i < m_skeleton.animations.size(); ++i) {
-                    auto& a = m_skeleton.animations[i];
-                    const char* pb = (a.playbackType == 'l') ? "loop"
-                                   : (a.playbackType == 'n') ? "none"
-                                   : (a.playbackType == 'o') ? "once"
-                                   : "?";
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn(); ImGui::Text("%zu", i);
-                    ImGui::TableNextColumn(); ImGui::Text("%s [%s]", a.name.c_str(), pb);
-                    ImGui::TableNextColumn(); ImGui::Text("%u", static_cast<unsigned>(a.animBoneCount));
-                }
-                ImGui::EndTable();
-            }
-            ImGui::Unindent(8.0f);
-        }
-    }
-
-    // --- Render Stats ---
-    if (ImGui::CollapsingHeader("Render Stats")) {
-        ImGui::Indent(8.0f);
-        ImGui::Text("GPU vertex count: %u", m_renderer.GetVertexCount());
-        ImGui::Text("GPU index count: %u", m_renderer.GetIndexCount());
-        ImGui::Text("Render target: %d x %d", m_renderer.GetRenderTargetWidth(), m_renderer.GetRenderTargetHeight());
-        bool hasTexture2 = m_material.HasTexture() ||
-            (!m_material.GetMaterials().empty() && m_material.GetMaterials()[0].loaded);
-        ImGui::Text("Texture bound: %s", hasTexture2 ? "yes (DDS)" : "no (white fallback)");
-        ImGui::Text("Render mode: %s", m_renderMode == 0 ? "Solid" : m_renderMode == 1 ? "Wireframe" : "Solid+Wire");
-        ImGui::Unindent(8.0f);
-    }
-
-    // Fix #1 diagnostics: local bone names + resolved remap.
-    if (!m_mesh.boneNames.empty()) {
-        if (ImGui::CollapsingHeader("V01/V02 Bone Remap (Fix #1)",
-                                     ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Text("Local bones: %zu", m_mesh.boneNames.size());
-            ImGui::Text("Remap entries: %zu", m_boneRemap.size());
-            int unresolved = 0;
-            for (int gi : m_boneRemap) if (gi < 0) ++unresolved;
-            if (unresolved > 0)
-                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
-                                   "Unresolved: %d (will use identity)", unresolved);
-            else
-                ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
-                                   "All bones resolved");
-
-            if (ImGui::BeginTable("##boneremap", 3,
-                                   ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-                ImGui::TableSetupColumn("Local idx");
-                ImGui::TableSetupColumn("Local name");
-                ImGui::TableSetupColumn("Global idx");
-                ImGui::TableHeadersRow();
-                for (size_t i = 0; i < m_mesh.boneNames.size(); ++i) {
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn(); ImGui::Text("%zu", i);
-                    ImGui::TableNextColumn(); ImGui::TextUnformatted(m_mesh.boneNames[i].c_str());
-                    ImGui::TableNextColumn();
-                    int gi = (i < m_boneRemap.size()) ? m_boneRemap[i] : -1;
-                    if (gi < 0) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "(none)");
-                    else        ImGui::Text("%d", gi);
-                }
-                ImGui::EndTable();
-            }
-        }
-    }
-
-    // Dev tool: force identity palette (isolates skinning bugs vs vertex-decode bugs).
-    if (ImGui::CollapsingHeader("Dev tools")) {
-        ImGui::Checkbox("Force Bind Pose (identity palette)", &m_forceBindPose);
-        ImGui::TextDisabled("When ON, all skinning matrices forced to identity.");
-        ImGui::TextDisabled("If shards disappear with this ON, the bug is in palette/remap,");
-        ImGui::TextDisabled("not vertex decode.");
-    }
-
+    ImGui::Separator();
+    ImGui::BeginChild("##InfoScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());
     ImGui::EndChild();
 }
 
-// -----------------------------------------------------------------------
-// Build plain-text report
-// -----------------------------------------------------------------------
-
 std::string MeshViewer::BuildInfoText() const {
     std::string s;
-    s.reserve(4096);
-
-    auto line = [&](const char* fmt, ...) {
-        char buf[512];
-        va_list args;
-        va_start(args, fmt);
-        vsnprintf(buf, sizeof(buf), fmt, args);
-        va_end(args);
-        s += buf;
+    auto line = [&s](const std::string& text) {
+        s += text;
         s += '\n';
     };
 
-    line("=== Mesh Info: %s ===", m_filename.c_str());
-    line("");
-
-    line("[Mesh Data (.smd)]");
-    line("Version: v%02u%s", m_mesh.version, m_mesh.version >= 3 ? " (DOLm)" : "");
-    line("Vertices: %u", m_mesh.vertexCount);
-    line("Triangles: %u", m_mesh.triangleCount);
-    line("Indices: %zu", m_mesh.indices.size());
-    if (m_mesh.detectedStride > 0)
-        line("Vertex stride: %u bytes", m_mesh.detectedStride);
-    if (m_mesh.boneCount > 0)
-        line("Bones: %u", m_mesh.boneCount);
-    if (m_mesh.blendCount > 0)
-        line("Blend shapes: %u", m_mesh.blendCount);
-    if (!m_mesh.submeshName.empty())
-        line("Submesh: %s", m_mesh.submeshName.c_str());
-    if (m_mesh.version >= 3)
-        line("DOLm: offset=%u, version=%u, bone_entries=%u, submeshes=%u",
-             m_mesh.dolmOffset, m_mesh.dolmVersion, m_mesh.boneDataEntryCount, m_mesh.submeshCount);
-    line("Index format: %s", m_renderer.Use32BitIndices() ? "uint32" : "uint16");
-    line("BBox Min: (%.4f, %.4f, %.4f)", m_mesh.bboxMin[0], m_mesh.bboxMin[1], m_mesh.bboxMin[2]);
-    line("BBox Max: (%.4f, %.4f, %.4f)", m_mesh.bboxMax[0], m_mesh.bboxMax[1], m_mesh.bboxMax[2]);
-    float dx = m_mesh.bboxMax[0] - m_mesh.bboxMin[0];
-    float dy = m_mesh.bboxMax[1] - m_mesh.bboxMin[1];
-    float dz = m_mesh.bboxMax[2] - m_mesh.bboxMin[2];
-    line("BBox Size: %.2f x %.2f x %.2f", dx, dy, dz);
-
-    auto& mats = m_material.GetMaterials();
-    if (m_isSmFile && !m_smData.smdPath.empty()) {
-        line("");
-        line("[SM Descriptor (.sm)]");
-        line("SM version: %u", m_smData.version);
-        line("Mesh path: %s", m_smData.smdPath.c_str());
-        if (!m_rigSourceName.empty()) {
-            line("Rig source: %s (%s)", m_rigSourceName.c_str(),
-                 m_isStaticPropMesh ? "local, static prop" : "shared");
-        }
-        if (m_smData.boneGroupCount > 0)
-            line("Bone groups: %u", m_smData.boneGroupCount);
-        line("Materials (%zu):", m_smData.materialPaths.size());
-        // Note: `mats` is the per-submesh expansion (size == submeshCount),
-        // not 1:1 with the raw material entries. Find loaded/ddsPath/normal
-        // info by matching matPath against the current entry's .path.
-        for (size_t i = 0; i < m_smData.materialPaths.size(); ++i) {
-            const char* pathStr = m_smData.materialPaths[i].path.c_str();
-            uint32_t runLen = m_smData.materialPaths[i].submeshCount;
-
-            bool loaded = false;
-            bool hasNormal = false;
-            std::string ddsPath;
-            std::string normalDdsPath;
-            for (const auto& mt : mats) {
-                if (mt.matPath == m_smData.materialPaths[i].path) {
-                    if (mt.loaded) {
-                        loaded = true;
-                        if (ddsPath.empty()) ddsPath = mt.ddsPath;
-                    }
-                    if (mt.normalLoaded) {
-                        hasNormal = true;
-                        if (normalDdsPath.empty()) normalDdsPath = mt.normalDdsPath;
-                    }
-                    if (loaded && hasNormal) break;
-                }
-            }
-
-            std::string ddsInfo = ddsPath.empty() ? std::string() : (" -> " + ddsPath);
-            char runBuf[32];
-            snprintf(runBuf, sizeof(runBuf), " x%u submesh%s", runLen, runLen == 1 ? "" : "es");
-            line("  [%zu] %s%s%s%s", i, pathStr, runBuf,
-                 loaded ? " [TEXTURED]" : "", ddsInfo.c_str());
-            if (hasNormal)
-                line("       normal: %s", normalDdsPath.c_str());
-        }
-        if (!m_mesh.submeshRanges.empty() && m_mesh.submeshRanges.size() > 1) {
-            line("Submesh ranges (%zu):", m_mesh.submeshRanges.size());
-            for (size_t i = 0; i < m_mesh.submeshRanges.size(); ++i) {
-                auto& r = m_mesh.submeshRanges[i];
-                line("  [%zu] %u idx (off %u), %u vtx (off %u)",
-                     i, r.indexCount, r.indexOffset, r.vertexCount, r.vertexOffset);
-            }
-        }
-        if (m_smData.bboxMin[0] != 0 || m_smData.bboxMax[0] != 0) {
-            line("SM BBox Min: (%.4f, %.4f, %.4f)", m_smData.bboxMin[0], m_smData.bboxMin[1], m_smData.bboxMin[2]);
-            line("SM BBox Max: (%.4f, %.4f, %.4f)", m_smData.bboxMax[0], m_smData.bboxMax[1], m_smData.bboxMax[2]);
+    line("File: " + m_path);
+    if (m_isAoc) {
+        line("Skin mesh: " + (m_aocSkinPath.empty() ? std::string("(none)") : m_aocSkinPath));
+        if (!m_aocWarnings.empty()) {
+            line("Extends chain warnings (" + std::to_string(m_aocWarnings.size()) + "):");
+            for (const auto& w : m_aocWarnings) line("  " + w);
         }
     }
+    if (m_isSmFile && !m_smData.smdPath.empty())
+        line("Mesh data: " + m_smData.smdPath);
 
-    auto& texInfo = m_material.GetTexInfo();
+    const bool hasGeometry = m_mesh.vertexCount > 0 || !m_mesh.vertices.empty();
+    if (hasGeometry) {
+        const size_t submeshes = m_mesh.submeshRanges.empty() ? 1 : m_mesh.submeshRanges.size();
+        line("Vertices: " + std::to_string(m_mesh.vertexCount));
+        line("Triangles: " + std::to_string(m_mesh.triangleCount));
+        line("Submeshes: " + std::to_string(submeshes));
+    }
+
+    // The skeleton looked up, and whether it loaded: m_rigSourceName is set
+    // once its bytes were read, m_skeletonError when reading or parsing failed.
+    const std::string notLoaded = m_skeletonError.empty()
+        ? std::string(m_rigSourceName.empty() ? " (not found)" : "")
+        : " (not loaded: " + m_skeletonError + ")";
+    if (m_isAoc) {
+        line("Skeleton: " + (m_aocSkeletonPath.empty() ? std::string("(none named)")
+                                                       : m_aocSkeletonPath + notLoaded));
+    } else if (m_isSmFile) {
+        if (m_rigSourceName.empty()) {
+            const auto dot = m_filename.rfind('.');
+            const std::string smBase = (dot != std::string::npos) ? m_filename.substr(0, dot) : m_filename;
+            line("Skeleton: (not found: no " + smBase + ".ast or rig.ast next to the mesh data)");
+        } else {
+            line("Skeleton: " + m_rigSourceName + (m_isStaticPropMesh ? " (local)" : " (shared)") + notLoaded);
+        }
+    }
+    // Where the bone count comes from: the loaded skeleton, else the mesh data.
+    if (!m_skeleton.bones.empty())
+        line("Bones: " + std::to_string(m_skeleton.bones.size()) + " (from the skeleton)");
+    else if (m_mesh.boneCount > 0)
+        line("Bones: " + std::to_string(m_mesh.boneCount) + " (from the mesh data; no skeleton loaded)");
+    line("Animation clips: " + std::to_string(m_skeleton.animations.size()));
+
     if (m_isSmFile) {
-        line("");
-        line("[Texture Pipeline]");
-        if (!texInfo.matPath.empty()) {
-            line("Material: %s (%s, %zu bytes)",
-                 texInfo.matPath.c_str(),
-                 texInfo.matFound ? "found" : "NOT FOUND",
-                 texInfo.matSize);
-        }
-        if (!texInfo.matJsonError.empty())
-            line("JSON error: %s", texInfo.matJsonError.c_str());
-        if (!texInfo.allDdsPaths.empty()) {
-            line("DDS textures found (%zu):", texInfo.allDdsPaths.size());
-            for (auto& p : texInfo.allDdsPaths)
-                line("  %s%s", p.c_str(), p == texInfo.selectedDdsPath ? " [selected]" : "");
-        }
-        if (!texInfo.selectedDdsPath.empty()) {
-            line("Active texture: %s", texInfo.selectedDdsPath.c_str());
-            if (texInfo.ddsFound) {
-                line("  File: %zu bytes", texInfo.ddsSize);
-                line("  GPU: %s", texInfo.gpuLoaded ? "loaded OK" : texInfo.gpuError.c_str());
-            } else {
-                line("  NOT FOUND in GGPK");
-            }
-        }
-    }
-
-    if (!m_skeleton.bones.empty()) {
-        line("");
-        line("[Skeleton]");
-        line("Bones: %zu", m_skeleton.bones.size());
-        line("Version: 0x%02X", static_cast<unsigned>(m_skeleton.version));
-        line("Header bone count: %u", static_cast<unsigned>(m_skeleton.boneCountHeader));
-        for (size_t i = 0; i < m_skeleton.bones.size(); ++i) {
-            auto& b = m_skeleton.bones[i];
-            line("  [%zu] %s (first_child: %s, next_sibling: %s)", i,
-                 b.name.c_str(),
-                 b.firstChildIndex == 0xFF ? "leaf" : std::to_string(b.firstChildIndex).c_str(),
-                 b.nextSiblingIndex == 0xFF ? "last" : std::to_string(b.nextSiblingIndex).c_str());
-        }
-    }
-
-    if (!m_skeleton.animations.empty()) {
-        line("");
-        line("[Animations] (%zu clips)", m_skeleton.animations.size());
-        for (size_t i = 0; i < m_skeleton.animations.size(); ++i) {
-            auto& a = m_skeleton.animations[i];
-            line("  [%zu] %s (bones: %u, fps: %u, playback: %c)",
-                 i, a.name.c_str(),
-                 static_cast<unsigned>(a.animBoneCount),
-                 static_cast<unsigned>(a.fps),
-                 a.playbackType);
-        }
-    }
-
-    line("");
-    line("[Render Stats]");
-    line("GPU vertices: %u", m_renderer.GetVertexCount());
-    line("GPU indices: %u", m_renderer.GetIndexCount());
-    line("Render target: %d x %d", m_renderer.GetRenderTargetWidth(), m_renderer.GetRenderTargetHeight());
-    bool hasTexture2 = m_material.HasTexture() ||
-        (!mats.empty() && mats[0].loaded);
-    line("Texture: %s", hasTexture2 ? "DDS" : "white fallback");
-    line("Camera: dist=%.2f, yaw=%.3f, pitch=%.3f, target=(%.2f, %.2f, %.2f)",
-         m_camera.GetDistance(), m_camera.GetYaw(), m_camera.GetPitch(),
-         0.0f, 0.0f, 0.0f); // target position available via GetTargetPosition but we don't expose individual floats here
-
-    return s;
-}
-
-// -----------------------------------------------------------------------
-// Half-float to float conversion
-// -----------------------------------------------------------------------
-
-float MeshViewer::HalfToFloat(uint16_t h) {
-    uint32_t sign = (h >> 15) & 1;
-    uint32_t exp  = (h >> 10) & 0x1F;
-    uint32_t mant = h & 0x3FF;
-
-    if (exp == 0) {
-        if (mant == 0) return sign ? -0.0f : 0.0f;
-        float f = static_cast<float>(mant) / 1024.0f;
-        f *= (1.0f / 16384.0f);
-        return sign ? -f : f;
-    }
-    if (exp == 31) {
-        if (mant == 0) return sign ? -INFINITY : INFINITY;
-        return NAN;
-    }
-
-    uint32_t f32 = (sign << 31) | ((exp - 15 + 127) << 23) | (mant << 13);
-    float result;
-    std::memcpy(&result, &f32, 4);
-    return result;
-}
-
-// -----------------------------------------------------------------------
-// Sprint 3: .aoc overlay helpers
-// -----------------------------------------------------------------------
-
-std::string MeshViewer::StripExtensionForAoc(const std::string& path) {
-    auto dot = path.rfind('.');
-    if (dot == std::string::npos) return path;
-    // Only strip if the extension is short (e.g., .sm, .smd, .ast)
-    if (path.size() - dot > 6) return path;
-    return path.substr(0, dot);
-}
-
-void MeshViewer::TryAutoDiscoverAoc(const std::string& meshOrAstPath) {
-    m_pendingAocBytes.clear();
-    m_pendingAocPath.clear();
-    if (!m_mgr) return;
-    std::string aocPath = StripExtensionForAoc(meshOrAstPath) + ".aoc";
-    void* node = m_mgr->FindNodeByPath(aocPath);
-    if (!node) return;
-    auto r = m_mgr->ReadFile(node);
-    if (!r) return;
-    m_pendingAocBytes = std::move(r.value);
-    m_pendingAocPath = aocPath;
-}
-
-void MeshViewer::ApplyPendingAoc() {
-    m_aocDocument = {};
-    m_aocWarnings.clear();
-    m_resolvedSkeleton.virtualBones.clear();
-
-    if (m_pendingAocBytes.empty() || !m_resolvedSkeleton.walkSucceeded) return;
-
-    auto tok = Parsers::TokenizeAoc(m_pendingAocBytes.data(), m_pendingAocBytes.size());
-    if (!tok) {
-        m_aocWarnings.push_back("AOC tokenize error: " + tok.error);
-        return;
-    }
-    auto file = Parsers::ParseAoc(tok.value);
-    if (!file) {
-        m_aocWarnings.push_back("AOC parse error: " + file.error);
-        return;
-    }
-    file.value.sourcePath = m_pendingAocPath;
-
-    auto doc = Parsers::ResolveExtends(file.value, m_mgr, &m_aocResolverCache);
-    if (!doc) {
-        m_aocWarnings.push_back("AOC resolve error: " + doc.error);
-        return;
-    }
-    m_aocDocument = std::move(doc.value);
-    for (const auto& w : m_aocDocument.warnings) m_aocWarnings.push_back(w);
-
-    std::vector<std::string> augWarns;
-    auto aug = Parsers::AugmentSkeleton(m_aocDocument, m_resolvedSkeleton, &augWarns);
-    if (!aug) {
-        m_aocWarnings.push_back("AOC augment error: " + aug.error);
-        return;
-    }
-    for (const auto& w : augWarns) m_aocWarnings.push_back(w);
-}
-
-void MeshViewer::RenderManualAocDialog() {
-    if (!m_manualAocDialogOpen) return;
-    ImGui::OpenPopup("Load .aoc Overlay##aocPicker");
-    if (ImGui::BeginPopupModal("Load .aoc Overlay##aocPicker", &m_manualAocDialogOpen,
-                                ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("GGPK path to .aoc file:");
-        char buf[512];
-        std::snprintf(buf, sizeof(buf), "%s", m_manualAocPathInput.c_str());
-        if (ImGui::InputText("##aocPath", buf, sizeof(buf))) {
-            m_manualAocPathInput = buf;
-        }
-        if (ImGui::Button("Load", ImVec2(100, 0))) {
-            if (m_mgr) {
-                if (void* node = m_mgr->FindNodeByPath(m_manualAocPathInput)) {
-                    auto r = m_mgr->ReadFile(node);
-                    if (r) {
-                        m_pendingAocBytes = std::move(r.value);
-                        m_pendingAocPath  = m_manualAocPathInput;
-                        ApplyPendingAoc();
-                        m_showSockets = !m_resolvedSkeleton.virtualBones.empty();
-                        m_manualAocDialogOpen = false;
-                    }
+        const auto& mats = m_material.GetMaterials();
+        line("Textures (" + std::to_string(m_smData.materialPaths.size()) + "):");
+        // `mats` is the per-submesh expansion, not 1:1 with the .sm's material
+        // entries: match by material path.
+        for (const auto& entry : m_smData.materialPaths) {
+            std::string dds;
+            for (const auto& mt : mats) {
+                if (mt.matPath == entry.path && mt.loaded) {
+                    dds = mt.ddsPath;
+                    break;
                 }
             }
+            line("  " + entry.path + (dds.empty() ? std::string("  (not loaded)") : "  -> " + dds));
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Clear", ImVec2(100, 0))) {
-            m_pendingAocBytes.clear();
-            m_pendingAocPath.clear();
-            m_aocDocument = {};
-            m_aocWarnings.clear();
-            m_resolvedSkeleton.virtualBones.clear();
-            m_showSockets = false;
-            m_manualAocDialogOpen = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-            m_manualAocDialogOpen = false;
-        }
-        ImGui::EndPopup();
+        if (m_material.HasTexture())
+            line("  fallback -> " + m_material.FallbackDdsPath());
     }
+    return s;
 }
 
 } // namespace GGPKExp

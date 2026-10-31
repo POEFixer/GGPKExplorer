@@ -49,6 +49,11 @@ public:
     void CollapseNode(uint32_t flatIndex);
     void ExpandTo(const std::string& path); // Expand all ancestors of path
 
+    // Expand All / Collapse All of a folder: every folder below `path` (and `path` itself,
+    // and for Expand its ancestors) marked at once, then ONE relinearize.
+    void ExpandSubtree(const std::string& path);
+    void CollapseSubtree(const std::string& path);
+
     // Bookmarks
     void SetBookmark(const std::string& path, int iconIndex);
     void RemoveBookmark(const std::string& path);
@@ -71,21 +76,11 @@ public:
     /// Case-insensitive variant. Builds a lowercase index lazily on first call.
     uint32_t FindByPathInsensitive(const std::string& path) const;
 
-    /// Debug: path index size (always-compiled, cheap). Returns the number of
-    /// entries in the lowercase path index if it has been built, otherwise the
-    /// size of the case-sensitive path index (which mirrors m_flat.size()).
-    /// Used by the DatViewer "[Dev] Inspect path resolution" context menu.
-    size_t GetPathIndexSize() const;
-
-    /// Debug: enumerate up to `max` keys from the lowercase path index whose
-    /// lowered form starts with the given prefix. Forces a build of the
-    /// lowercase index if it hasn't been built yet (same as FindByPathInsensitive).
-    /// Intended for diagnostics only — not on any hot path.
-    std::vector<std::string> DebugFindKeysWithPrefix(const std::string& loweredPrefix,
-                                                     size_t max) const;
-
     /// Collect all files under the given path recursively WITHOUT expanding nodes.
-    /// Calls visitor(fullPath, name, fileSize, nodePtr) for each file.
+    /// Calls visitor(fullPath, name, fileSize, nodePtr) for each file. A file path visits
+    /// that file alone. `fullPath` and `name` are the tree node's own strings: they stay
+    /// valid (same address) until Clear() or BuildFromManager(); sorting and expanding never
+    /// move them (an extraction job keeps pointers to them).
     void ForEachFileUnder(const std::string& path,
         std::function<void(const std::string& fullPath, const std::string& name, int64_t fileSize, void* nodePtr)> visitor) const;
 
@@ -125,6 +120,8 @@ private:
     int64_t m_totalSize = 0;
 
     void BuildInternalTree(const FileEntry& src, TreeNode& dst);
+    void MarkAncestorsExpanded(const std::string& path);
+    static void SetExpandedRecursive(TreeNode& node, bool expanded);
     void SortChildren(TreeNode& node);
     void Relinearize();
     void LinearizeRecursive(TreeNode& node, uint32_t depth, uint32_t parentIndex);

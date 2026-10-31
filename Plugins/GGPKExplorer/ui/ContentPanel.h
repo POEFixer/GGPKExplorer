@@ -26,7 +26,6 @@ class MtpViewer;
 class MatTableViewer;
 class MeshViewer;
 class PsgViewer;
-class AocViewer;
 
 class ContentPanel {
 public:
@@ -51,40 +50,25 @@ public:
                   int64_t size, FileType type, void* nodePtr);
     void Clear();
     void Render();
+    // The DAT viewer's Find references scan is reading the archive (Clear stops it).
+    bool IsDatReferenceScanRunning() const;
 
-    bool HasFileLoaded() const { return !m_currentPath.empty(); }
-    const std::string& GetCurrentPath() const { return m_currentPath; }
     void ScrollToLine(int line);
     void ScrollToRow(int row);
-
-    // Phase 4 — Previous (non-current) mesh/AOC selection for the AocViewer
-    // "Attach Selected Mesh" flow. Captures the file loaded BEFORE the current
-    // one if it was Mesh (.sm) or Aoc (.aoc). Returns empty-path if no such
-    // previous file exists.
-    struct PreviousSelection {
-        std::string          path;
-        std::vector<uint8_t> bytes;
-        FileType             type = FileType::Unknown;
-    };
-    PreviousSelection GetPreviousSelection() const {
-        return { m_previousPath, m_previousBytes, m_previousFileType };
-    }
 
     // For DatViewer foreign key navigation
     std::string pendingNavigatePath;
     int pendingNavigateRow = -1;
     std::string navNotFoundPath;    // set by GGPKExplorer when NavigateToPath lookup fails
 
-    // Forwarders to animation viewers (MeshViewer, AocViewer). These cache
-    // state until viewers are lazily created in InitViewers(), then apply it.
+    // Forwarders to the model viewer (MeshViewer). These cache state until
+    // the viewers are lazily created in InitViewers(), then apply it.
     void SetAnimPanelState(GGPKExp::AnimationPanelState* state);
     void SetPlaybackSpeedPtr(float* ptr);
     void SetUiSettings(GGPKExp::GGPKExplorerUiSettings* settings);
     void SetViewSettings(GGPKExp::MeshViewSettings* state);
     bool ConsumeUiSettingsDirty();
-    float GetCurrentPlaybackSpeed() const;
     void SetInitialPlaybackSpeed(float s);
-    void SetPluginDir(const std::string& dir);
 
 private:
     GGPKManager* m_manager = nullptr;  // non-owning, lifetime guaranteed by GGPKExplorer
@@ -101,11 +85,6 @@ private:
 
     // Fails the load with our own message (m_loadError holds the key, so it reads as failed).
     void SetOwnLoadError(const char* key) { m_loadErrorKey = key; m_loadError = key; }
-
-    // Phase 4 — stashed previous file (mesh/aoc only) for AocViewer attach flow
-    std::string          m_previousPath;
-    FileType             m_previousFileType = FileType::Unknown;
-    std::vector<uint8_t> m_previousBytes;
 
     FileProperties m_properties;
 
@@ -133,10 +112,9 @@ private:
     bool m_hasInitialPlaybackSpeed = false;
     float* m_playbackSpeedPtr = nullptr;
     GGPKExp::GGPKExplorerUiSettings* m_uiSettings = nullptr;
-    std::string m_pluginDir;   // forwarded to AocViewer at SetD3DDevice
 
     enum class DefaultTab { None, Text, Image, Dat, Audio, Hex,
-                            Mesh, Terrain, TerrainMeta, MatTable, SkillTree, Aoc };
+                            Mesh, Terrain, TerrainMeta, MatTable, SkillTree };
     DefaultTab m_defaultTab = DefaultTab::None;
     bool m_tabSelectionApplied = false;
 

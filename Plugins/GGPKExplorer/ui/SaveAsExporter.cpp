@@ -12,8 +12,7 @@
 
 #include <cctype>
 #include <cstdio>
-#include <fstream>
-#include <set>
+#include <unordered_set>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -49,15 +48,6 @@ const char* SaveAsExporter::FormatName(SaveFormat fmt) {
     }
     return "";
 }
-const wchar_t* SaveAsExporter::FormatNameW(SaveFormat fmt) {
-    switch (fmt) {
-    case SaveFormat::Json: return L"JSON";
-    case SaveFormat::Csv:  return L"CSV";
-    case SaveFormat::Dds:  return L"DDS";
-    case SaveFormat::Png:  return L"PNG";
-    }
-    return L"";
-}
 
 static bool EndsWithCI(const std::string& s, const char* suffix) {
     size_t n = 0; while (suffix[n]) ++n;
@@ -70,25 +60,24 @@ static bool EndsWithCI(const std::string& s, const char* suffix) {
     return true;
 }
 
-void SaveAsExporter::CollectTargets(SaveFormat fmt, std::vector<Target>& out, bool& sawNonMatching) const {
+// The selection's files of the format's source type, each once. The paths are the tree
+// nodes' own strings (a selected file walks to itself): they stay put while the job runs.
+void SaveAsExporter::CollectTargets(SaveFormat fmt, std::vector<ExtractJob::Item>& out, bool& sawNonMatching) const {
     sawNonMatching = false;
     if (!m_tree || !m_treePanel) return;
     const char* needExt = RequiredExt(fmt);
     const auto& flat = m_tree->GetFlatList();
-    std::set<std::string> seen;
+    std::unordered_set<void*> seen;
+    auto add = [&](const std::string& fullPath, const std::string& name, int64_t /*sz*/, void* nodePtr) {
+        if (nodePtr && EndsWithCI(name, needExt) && seen.insert(nodePtr).second)
+            out.push_back({ static_cast<GGPK::FileRecord*>(nodePtr), &fullPath, 0 });
+    };
 
     for (int idx : m_treePanel->GetSelectedIndices()) {
         if (idx < 0 || idx >= static_cast<int>(flat.size())) continue;
         const auto& e = flat[static_cast<uint32_t>(idx)];
-        if (e.isDirectory) {
-            m_tree->ForEachFileUnder(e.fullPath,
-                [&](const std::string& fullPath, const std::string& name, int64_t /*sz*/, void* nodePtr) {
-                    if (EndsWithCI(name, needExt) && seen.insert(fullPath).second)
-                        out.push_back({ nodePtr, fullPath });
-                });
-        } else if (EndsWithCI(e.name, needExt)) {
-            if (seen.insert(e.fullPath).second)
-                out.push_back({ e.nodePtr, e.fullPath });
+        if (e.isDirectory || EndsWithCI(e.name, needExt)) {
+            m_tree->ForEachFileUnder(e.fullPath, add);
         } else {
             sawNonMatching = true;
         }
@@ -96,10 +85,10 @@ void SaveAsExporter::CollectTargets(SaveFormat fmt, std::vector<Target>& out, bo
 }
 
 void SaveAsExporter::SaveSelectionAs(SaveFormat fmt) {
-    if (m_running.load()) return;
+    if (IsRunning()) return;
     if (!m_manager || !m_tree || !m_treePanel) return;
 
-    std::vector<Target> targets;
+    std::vector<ExtractJob::Item> targets;
     bool sawNonMatching = false;
     CollectTargets(fmt, targets, sawNonMatching);
 
@@ -130,7 +119,7 @@ void SaveAsExporter::SaveSelectionAs(SaveFormat fmt) {
     std::filesystem::path destRoot, singleOut;
 
     if (singleFileSel) {
-        std::filesystem::path srcRel = PathUtils::FromUtf8(targets.front().ggpkPath);
+        std::filesystem::path srcRel = PathUtils::FromUtf8(*targets.front().path);
         std::wstring defName = srcRel.stem().wstring() + OutExtW(fmt);
         wchar_t savePath[MAX_PATH] = {};
         if (defName.size() < MAX_PATH) wcsncpy_s(savePath, defName.c_str(), defName.size());
@@ -172,93 +161,110 @@ void SaveAsExporter::SaveSelectionAs(SaveFormat fmt) {
         destRoot = std::filesystem::path(folder);
     }
 
-    if (m_thread.joinable()) m_thread.join();   // reap a previous finished run
-    m_running.store(true);
+    RunExport(fmt, std::move(targets), std::move(destRoot), std::move(singleOut));
+}
+
+void SaveAsExporter::UpdateProgress() {
+    if (m_statusBar && m_job && m_job->IsRunning()) {
+        const size_t total = m_job->Total();
+        m_statusBar->progress.store(total ? static_cast<float>(m_job->Done()) / static_cast<float>(total) : 0.0f);
+    }
+}
+
+void SaveAsExporter::RunExport(SaveFormat fmt, std::vector<ExtractJob::Item> targets,
+                               std::filesystem::path destRoot, std::filesystem::path singleOut) {
+    GGPK::Index* index = m_manager ? m_manager->GetIndex() : nullptr;
+    if (!index) return;
+    if (!m_job) m_job = std::make_unique<ExtractJob>();
+    if (m_job->IsRunning()) return;
+
+    // The schema of this run: the game data may replace m_schema meanwhile (the old one stays
+    // alive, GGPKExplorer keeps every schema it loaded).
+    DatSchema* schema = m_schema;
+
+    ExtractJob::Options options;
+    if (!singleOut.empty()) {
+        options.singleOutput = singleOut.native();
+    } else {
+        options.outputDir = destRoot.native();
+        options.replaceExtension = OutExtW(fmt);
+    }
+    options.readWorkers = ExtractJob::DefaultReadWorkers();
+    options.convertWorkers = ExtractJob::DefaultConvertWorkers();
+    // Two queues here (read -> convert -> write) and a converted table can be several times
+    // its DAT: half the extraction's bound each keeps the whole job's memory alike.
+    options.queueBytes = 128u * 1024 * 1024;
+
+    using Outcome = ExtractJob::Outcome;
+    switch (fmt) {
+    case SaveFormat::Json:
+    case SaveFormat::Csv: {
+        const bool json = fmt == SaveFormat::Json;
+        options.convert = [schema, json](const ExtractJob::Item& item, std::vector<uint8_t>& bytes,
+                                         std::string& why) -> Outcome {
+            if (bytes.empty()) { why = "empty file"; return Outcome::Fail; }
+            if (!schema || !schema->IsLoaded()) { why = "no schema"; return Outcome::Skip; }
+            std::vector<uint8_t> out;
+            std::string err;
+            const std::string table = ExtractTableName(*item.path);
+            const bool ok = json ? DatExport::ConvertBytesToJsonBytes(bytes, table, *schema, out, &err)
+                                 : DatExport::ConvertBytesToCsvBytes(bytes, table, *schema, out, &err);
+            if (ok) {
+                bytes = std::move(out);
+                return Outcome::Write;
+            }
+            why = err;
+            // A table the schema does not know is skipped, never a failure.
+            return err.rfind("no schema", 0) == 0 ? Outcome::Skip : Outcome::Fail;
+        };
+        break;
+    }
+    case SaveFormat::Png:
+        options.convert = [](const ExtractJob::Item& /*item*/, std::vector<uint8_t>& bytes,
+                             std::string& why) -> Outcome {
+            if (bytes.empty()) { why = "empty file"; return Outcome::Fail; }
+            std::vector<uint8_t> png;
+            if (!ImageExport::DdsBytesToPngBytes(bytes, png, &why)) return Outcome::Fail;
+            bytes = std::move(png);
+            return Outcome::Write;
+        };
+        break;
+    case SaveFormat::Dds:
+        break;   // the file as it is (an empty one is written empty, as an extraction)
+    }
+
     if (m_statusBar) {
         m_statusBar->progress.store(0.0f);
         m_statusBar->progressLabel = LocText{ I18n::Key("progress_save_as"), { { "format", FormatName(fmt) } } };
         m_statusBar->progressActive.store(true);
     }
-    RunExport(fmt, std::move(targets), std::move(destRoot), std::move(singleOut));
-}
 
-void SaveAsExporter::RunExport(SaveFormat fmt, std::vector<Target> targets,
-                               std::filesystem::path destRoot, std::filesystem::path singleOut) {
-    // The schema of this run: the game data may replace m_schema meanwhile (the old one stays
-    // alive, GGPKExplorer keeps every schema it loaded).
-    DatSchema* schema = m_schema;
-    m_thread = std::thread([this, fmt, schema, targets = std::move(targets),
-                            destRoot = std::move(destRoot), singleOut = std::move(singleOut)]() mutable {
-        size_t ok = 0, skippedNoSchema = 0, failed = 0;
-        const size_t total = targets.size();
-
-        for (size_t i = 0; i < total; ++i) {
-            if (!m_running.load()) break;
-            const Target& t = targets[i];
-
-            std::filesystem::path outPath;
-            if (!singleOut.empty()) {
-                outPath = singleOut;
-            } else {
-                std::filesystem::path rel = PathUtils::FromUtf8(t.ggpkPath);
-                rel.replace_extension(OutExtW(fmt));
-                outPath = destRoot / rel;
-                std::error_code ec;
-                std::filesystem::create_directories(outPath.parent_path(), ec);
-            }
-
-            auto r = m_manager->ReadFile(t.nodePtr);
-            if (!r || r.value.empty()) {
-                ++failed;
-            } else {
-                bool wrote = false;
-                std::string err;
-                switch (fmt) {
-                case SaveFormat::Json:
-                    if (schema && schema->IsLoaded()) wrote = DatExport::ConvertBytesToJson(r.value, ExtractTableName(t.ggpkPath), *schema, outPath, &err);
-                    else err = "no schema";
-                    break;
-                case SaveFormat::Csv:
-                    if (schema && schema->IsLoaded()) wrote = DatExport::ConvertBytesToCsv(r.value, ExtractTableName(t.ggpkPath), *schema, outPath, &err);
-                    else err = "no schema";
-                    break;
-                case SaveFormat::Dds: {
-                    std::ofstream os(outPath, std::ios::binary);
-                    if (os.is_open()) {
-                        os.write(reinterpret_cast<const char*>(r.value.data()),
-                                 static_cast<std::streamsize>(r.value.size()));
-                        wrote = os.good();
-                    }
-                    break;
-                }
-                case SaveFormat::Png:
-                    wrote = ImageExport::DdsBytesToPng(r.value, outPath, &err);
-                    break;
-                }
-                if (wrote) ++ok;
-                else if (err.rfind("no schema", 0) == 0) ++skippedNoSchema;
-                else ++failed;
-            }
-
-            if (m_statusBar)
-                m_statusBar->progress.store(static_cast<float>(i + 1) / static_cast<float>(total));
+    // Logged from the job's thread: it uses only what outlives the job.
+    LogCallback log = m_log;
+    StatusBarState* statusBar = m_statusBar;
+    const char* formatName = FormatName(fmt);
+    auto onFinished = [log, statusBar, formatName](const ExtractJob::Summary& s) {
+        if (statusBar) statusBar->progressActive.store(false);
+        if (!log) return;
+        char buf[512];
+        if (!s.fatalError.empty()) {
+            snprintf(buf, sizeof(buf), "GGPKExplorer: Save As %s stopped: %s", formatName, s.fatalError.c_str());
+            log("Error", buf);
         }
+        snprintf(buf, sizeof(buf),
+                 "GGPKExplorer: Save As %s - %zu written, %zu skipped (no schema), %zu failed%s",
+                 formatName, s.written, s.skipped, s.failed, s.cancelled ? ", cancelled" : "");
+        log("Info", buf);
+        for (const auto& error : s.sampleErrors) {
+            snprintf(buf, sizeof(buf), "GGPKExplorer: Save As %s failed: %s", formatName, error.c_str());
+            log("Error", buf);
+        }
+    };
 
+    if (!m_job->Start(*index, std::move(targets), std::move(options), std::move(onFinished))) {
         if (m_statusBar) m_statusBar->progressActive.store(false);
-        m_running.store(false);
-
-        if (m_log) {
-            char buf[384];
-            snprintf(buf, sizeof(buf),
-                     "GGPKExplorer: Save As %s - %zu written, %zu skipped (no schema), %zu failed",
-                     FormatName(fmt), ok, skippedNoSchema, failed);
-            m_log("Info", buf);
-        }
-    });
-}
-
-void SaveAsExporter::JoinThread() {
-    if (m_thread.joinable()) m_thread.join();
+        if (m_log) m_log("Error", "GGPKExplorer: could not start Save As");
+    }
 }
 
 } // namespace GGPKExp

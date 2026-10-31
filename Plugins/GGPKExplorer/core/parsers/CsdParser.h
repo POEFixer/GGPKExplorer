@@ -37,15 +37,4 @@ void ParseCsdMultiLang(const uint8_t* data,
                        CsdMultiLangFormatMap& out,
                        std::vector<std::string>& outIncludes);
 
-// Iterative reader callback: given a file path inside the GGPK, fetches its
-// bytes. Returns false to indicate the file was not found.
-using CsdFileReader = bool(*)(void* userData, const std::string& path, std::vector<uint8_t>& outBytes);
-
-// Parse a root .csd file and follow every `include` directive recursively.
-// `visited` is used internally to break include cycles.
-void ParseCsdRecursive(const std::string& rootPath,
-                       CsdFileReader reader,
-                       void* userData,
-                       CsdFormatMap& out);
-
 }} // namespace GGPKExp::Parsers

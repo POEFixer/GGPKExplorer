@@ -158,12 +158,6 @@ void MeshCamera::GetEyePosition(float& x, float& y, float& z) const {
     z = m_targetZ - m_distance * sp;   // -sp: pitch>0 moves eye toward -Z (world up)
 }
 
-void MeshCamera::GetTargetPosition(float& x, float& y, float& z) const {
-    x = m_targetX;
-    y = m_targetY;
-    z = m_targetZ;
-}
-
 // -----------------------------------------------------------------------
 // Matrix builders
 // -----------------------------------------------------------------------

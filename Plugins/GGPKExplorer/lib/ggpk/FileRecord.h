@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -24,7 +25,7 @@ public:
 
     uint64_t GetPathHash() const { return m_pathHash; }
 
-    BundleRecord* GetBundleRecord() const { return m_bundleRecord; }
+    BundleRecord* GetBundleRecord() const { return m_bundleRecord.load(std::memory_order_relaxed); }
 
     int32_t GetOffset() const { return m_offset; }
     int32_t GetSize() const { return m_size; }
@@ -34,7 +35,11 @@ public:
     void SetPath(std::string path) { m_path = std::move(path); }
 
     /// Read the content of this file from its bundle.
-    /// If a bundle is provided, reads from it; otherwise opens the bundle via factory.
+    /// If a bundle is provided, reads from it. Otherwise: the Index's pending write buffer
+    /// first (a file written since the last save), else the bundle on disk through the
+    /// Index's read cache (read-only handles, decoded chunks). Thread-safe against other
+    /// readers and against Write/Save on other threads (they wait for each other).
+    /// Never call it while holding the Index's ioMutex.
     std::vector<uint8_t> Read(Bundle* bundle = nullptr) const;
 
     /// Replace the content of this file.
@@ -51,7 +56,9 @@ public:
 
 private:
     uint64_t m_pathHash;
-    BundleRecord* m_bundleRecord;
+    // Atomic only so the hop to the Index (whose lock guards every change) is no data
+    // race; every read and change of the file's location happens under that lock.
+    std::atomic<BundleRecord*> m_bundleRecord;
     int32_t m_offset;
     int32_t m_size;
     std::string m_path;

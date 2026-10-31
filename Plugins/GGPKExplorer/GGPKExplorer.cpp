@@ -1,9 +1,10 @@
 // Texts in the program language (PluginI18n.h): lang/<code>.json next to the DLL, English
 // compiled in through lang_en.generated.h (python tools/plugin_i18n/gen.py Plugins/GGPKExplorer).
-// Only the chrome (this file and ui/) is translated; viewers/, core/, dev/ and the log stay English.
+// Only the chrome (this file and ui/) is translated; viewers/, core/ and the log stay English.
 #include "../../POEFixer/plugin_sdk/PluginSDK.h"
 #include "lang_en.generated.h"   // the embedded English: once per DLL, after PluginSDK.h
 #include "GGPKExplorer.h"
+#include "core/PathUtils.h"
 #include "../../POEFixer/imgui/imgui.h"
 #include "lib/json.hpp"
 #include "../../POEFixer/imgui/IconsFontAwesome6.h"
@@ -36,24 +37,26 @@ static void PluginLog(const PluginSDK::Context* ctx, const char* category, const
     ctx->Log.Log(category, buf);
 }
 
-// Helper: Convert wide string to UTF-8
-static std::string WideToUtf8(const wchar_t* wstr) {
-    if (!wstr || !wstr[0]) return {};
-    int needed = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
-    if (needed <= 0) return {};
-    std::string result(needed - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, result.data(), needed, nullptr, nullptr);
-    return result;
-}
-
-// Helper: Convert UTF-8 to wide string
-static std::wstring Utf8ToWide(const std::string& str) {
-    if (str.empty()) return {};
-    int needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
-    if (needed <= 0) return {};
-    std::wstring result(needed - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, result.data(), needed);
-    return result;
+// The full-window busy overlay (loading, saving): a spinner and its text.
+static void DrawBusyOverlay(const char* text) {
+    ImVec2 winPos = ImGui::GetWindowPos();
+    ImVec2 winSize = ImGui::GetWindowSize();
+    ImVec2 center(winPos.x + winSize.x * 0.5f, winPos.y + winSize.y * 0.5f);
+    float radius = 24.0f;
+    float t = static_cast<float>(ImGui::GetTime());
+    auto* drawList = ImGui::GetForegroundDrawList();
+    drawList->AddRectFilled(winPos, ImVec2(winPos.x + winSize.x, winPos.y + winSize.y),
+        IM_COL32(0, 0, 0, 100));
+    int segments = 12;
+    for (int i = 0; i < segments; ++i) {
+        float angle = t * 5.0f + static_cast<float>(i) * 3.14159265f * 2.0f / static_cast<float>(segments);
+        float alpha = static_cast<float>(segments - i) / static_cast<float>(segments);
+        ImVec2 p(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
+        drawList->AddCircleFilled(p, 3.5f, IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)));
+    }
+    ImVec2 textSize = ImGui::CalcTextSize(text);
+    drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y + radius + 12.0f),
+        IM_COL32(255, 255, 255, 255), text);
 }
 
 // ---------------------------------------------------------------------------
@@ -78,14 +81,13 @@ void GGPKExplorer::OnEnable(bool /*isGameAttached*/) {
     // SaveSettings() would refuse to write and overwrite would be prevented.
     m_uiSettingsLoaded = true;
 
-    // Propagate to ContentPanel — which caches and forwards to MeshViewer/
-    // AocViewer at viewer-init time (they don't exist until SetD3DDevice).
+    // Propagate to ContentPanel — which caches and forwards to the model
+    // viewer at viewer-init time (it doesn't exist until SetD3DDevice).
     m_ContentPanel.SetAnimPanelState(&m_uiSettings.animPanel);
     m_ContentPanel.SetPlaybackSpeedPtr(&m_uiSettings.playbackSpeed);
     m_ContentPanel.SetUiSettings(&m_uiSettings);
     m_ContentPanel.SetViewSettings(&m_uiSettings.meshView);
     m_ContentPanel.SetInitialPlaybackSpeed(m_uiSettings.playbackSpeed);
-    m_ContentPanel.SetPluginDir(Directory());
 
     // Phase 7 / T23 — push persisted editor panel width. ContentPanel caches
     // it until DatViewer is lazily created (InitViewers picks it up there).
@@ -183,14 +185,8 @@ void GGPKExplorer::OnEnable(bool /*isGameAttached*/) {
     m_shortcuts->Register(ImGuiKey_F5, false, false, false, [this]() {
         if (m_Manager.IsOpen() && !m_ggpkLoadPending && m_taskRunner) {
             m_GgpkPath = m_Manager.GetOpenedPath();
-            m_Manager.Close();
-            m_Tree.Clear();
-            m_NavBar.Clear();
-            m_SelectedFilePath.clear();
-            m_ContentPanel.Clear();
-            m_isLoaded = false;
-            m_ggpkLoadPending = true;
-            m_openFuture = m_Manager.OpenAsync(m_GgpkPath, *m_taskRunner);
+            ResetLoadedState();
+            StartLoad();
         }
     });
     // Escape: Close popups
@@ -208,7 +204,8 @@ void GGPKExplorer::OnEnable(bool /*isGameAttached*/) {
     // Pre-fill path but don't auto-load
     if (m_GgpkPath.empty()) {
         std::string ggpkPath = ReadSmootherGGPKPath();
-        if (!ggpkPath.empty() && std::filesystem::exists(ggpkPath)) {
+        std::error_code ec;
+        if (!ggpkPath.empty() && fs::exists(GGPKExp::PathUtils::FromUtf8(ggpkPath), ec)) {
             m_GgpkPath = ggpkPath;
         }
     }
@@ -308,34 +305,176 @@ void GGPKExplorer::OnDisable() {
     m_shortcuts.reset();
     m_quickJump.reset();
     m_bookmarkMgr.reset();
-    m_FileSearcher.Cancel();
-    m_ContentSearcher.Cancel();
 
-    // Wait for extract thread if running
-    if (m_extractDialog) m_extractDialog->JoinExtractThread();
-    m_extractDialog.reset();
-
-    // Wait for Save As export thread if running
-    if (m_saveAsExporter) {
-        m_saveAsExporter->Cancel();
-        m_saveAsExporter->JoinThread();
+    // An open in flight finishes first (no job runs while it does): its archive is closed below.
+    if (m_openFuture.valid()) {
+        try {
+            (void)m_openFuture.get();
+        } catch (...) {}
     }
+    m_ggpkLoadPending = false;
+
+    // Every job is cancelled and joined, replaced files are saved, then the archive closes.
+    ResetLoadedState();
+    m_extractDialog.reset();
     m_saveAsExporter.reset();
 
-    // Wait for any pending async open to complete before closing
-    if (m_openFuture.valid()) {
-        m_openFuture.wait();
-    }
     // A schema load in flight finishes here; the next OnEnable adopts its result.
     if (m_datSchemaLoad.valid()) {
         m_datSchemaLoad.wait();
     }
     m_taskRunner.reset();
 
+    PluginLog(ctx(), "Info", "GGPKExplorer disabled");
+}
+
+// ---------------------------------------------------------------------------
+// Archive lifecycle
+// ---------------------------------------------------------------------------
+
+bool GGPKExplorer::AnyJobRunning() const {
+    return (m_extractDialog && m_extractDialog->IsExtractRunning())
+        || (m_saveAsExporter && m_saveAsExporter->IsRunning())
+        || m_ContentSearcher.IsRunning()
+        || m_ContentPanel.IsDatReferenceScanRunning();   // the DAT viewer's Find references
+}
+
+// Cancels and joins every job that reads the archive or walks the tree. The DAT viewer's
+// reference scan and row decode stop with ContentPanel::Clear (DatViewer::Clear cancels and
+// waits for them). The auto-flush is waited for (a save is never cut short).
+void GGPKExplorer::StopBackgroundJobs() {
+    m_FileSearcher.CancelAndJoin();
+    m_ContentSearcher.CancelAndJoin();
+    if (m_extractDialog) m_extractDialog->JoinExtractThread();
+    if (m_saveAsExporter) m_saveAsExporter->CancelAndJoin();
+    m_ContentPanel.Clear();
+    if (m_saveFuture.valid()) {
+        std::string error;
+        try {
+            error = m_saveFuture.get();
+        } catch (...) {
+            error = "unknown error";
+        }
+        if (!error.empty())
+            PluginLog(ctx(), "Error", "GGPKExplorer: saving the replaced files failed: %s", error.c_str());
+    }
+    m_savePending = false;
+}
+
+// Replaced files not saved yet: saved now (the jobs are stopped), before the archive closes.
+void GGPKExplorer::FlushPendingWrites() {
+    if (!m_Manager.HasPendingWrites()) return;
+    std::string error;
+    if (!m_Manager.FlushWrites(&error))
+        PluginLog(ctx(), "Error", "GGPKExplorer: saving the replaced files failed: %s", error.c_str());
+}
+
+// Back to "nothing loaded" (Load, Unload, F5, OnDisable): jobs stopped, writes saved, the
+// archive closed, the tree and every view of it reset.
+void GGPKExplorer::ResetLoadedState() {
+    StopBackgroundJobs();
+    FlushPendingWrites();
     m_Manager.Close();
     m_Tree.Clear();
     m_NavBar.Clear();
-    PluginLog(ctx(), "Info", "GGPKExplorer disabled");
+    m_TreePanel.ClearSelection();
+    m_SearchDialog.DiscardPending();
+    m_SelectedFilePath.clear();
+    m_SelectedIsDirectory = false;
+    m_StatusBar.fileCount = 0;
+    m_StatusBar.dirCount = 0;
+    m_StatusBar.totalSize = 0;
+    m_StatusBar.selectedName.clear();
+    m_StatusBar.selectedSize = -1;
+    m_StatusBar.progress.store(0.0f);
+    m_StatusBar.progressActive.store(false);
+    m_StatusBar.progressLabel = {};
+    m_isLoaded = false;
+}
+
+// Opens m_GgpkPath on the task runner; RenderMainContent shows the spinner until FinishLoad.
+void GGPKExplorer::StartLoad() {
+    if (m_GgpkPath.empty() || !m_taskRunner) return;
+    if (!m_OodleInitialized) {
+        m_OodleInitialized = GGPKExp::GGPKManager::InitOodle("");
+        if (m_OodleInitialized) {
+            PluginLog(ctx(), "Info", "GGPKExplorer: Oodle initialized");
+        }
+    }
+    m_ggpkLoadPending = true;
+    m_openFuture = m_Manager.OpenAsync(m_GgpkPath, *m_taskRunner);
+}
+
+// The drawing thread, once the open finished: the tree and every view of the archive.
+void GGPKExplorer::FinishLoad(const GGPKExp::Result<void>& result) {
+    m_ggpkLoadPending = false;
+    if (!result) {
+        m_isLoaded = false;
+        PluginLog(ctx(), "Error", "GGPKExplorer: failed to open: %s", result.error.c_str());
+        return;
+    }
+
+    {
+        const char* modeStr = (m_Manager.GetMode() == GGPKExp::SourceMode::StandaloneGGPK) ? "GGPK" : "Bundles";
+        PluginLog(ctx(), "Info", "GGPKExplorer: opened %s (mode: %s)", m_GgpkPath.c_str(), modeStr);
+    }
+    auto savedBookmarks = m_Tree.GetBookmarks();
+    m_Tree.BuildFromManager(m_Manager);
+    if (!savedBookmarks.empty())
+        m_Tree.SetBookmarks(std::move(savedBookmarks));
+    m_ContentPanel.SetManager(&m_Manager);
+    m_ContentPanel.SetVirtualTree(&m_Tree);
+    if (ctx()->D3DDevice)
+        m_ContentPanel.SetD3DDevice(static_cast<ID3D11Device*>(ctx()->D3DDevice));
+    m_TreePanel.SetTree(&m_Tree);
+    if (m_quickJump) m_quickJump->SetTree(&m_Tree);
+    m_TreePanel.SetOnSelect([this](const GGPKExp::TreeEntry& entry) {
+        m_SelectedFilePath = entry.fullPath;
+        m_SelectedIsDirectory = entry.isDirectory;
+        m_StatusBar.selectedName = entry.name;
+        m_StatusBar.selectedSize = entry.fileSize;
+        m_NavBar.Navigate(entry.fullPath);
+        if (!entry.isDirectory) {
+            m_ContentPanel.LoadFile(entry.fullPath, entry.name,
+                                    entry.fileSize, entry.type, entry.nodePtr);
+        } else {
+            m_ContentPanel.Clear();
+        }
+    });
+    m_SearchDialog.SetTree(&m_Tree);
+    m_SearchDialog.SetManager(&m_Manager);
+    m_SearchDialog.SetDatSchema(CurrentDatSchema());
+    m_SearchDialog.SetFileSearcher(&m_FileSearcher);
+    m_SearchDialog.SetContentSearcher(&m_ContentSearcher);
+    m_SearchDialog.SetDatSearcher(&m_DatSearcher);
+    m_SearchDialog.SetOnResults([this](const GGPKExp::SearchResult& sr) {
+        m_ResultsPanel.ShowSearchResults(sr);
+    });
+    m_SearchDialog.SetOnReplaceLog([this](const std::vector<GGPKExp::ReplaceResult>& rr) {
+        m_ResultsPanel.ShowReplaceLog(rr);
+    });
+    m_SearchDialog.SetLogCallback([this](const char* category, const char* message) {
+        ctx()->Log.Log(category, message);
+    });
+    m_SearchDialog.SetOnNavigateToLine([this](const std::string& p, int line) {
+        NavigateToPath(p);
+        m_ContentPanel.ScrollToLine(line);
+    });
+    m_ResultsPanel.SetOnNavigate([this](const std::string& p, int line, bool isDatRow) {
+        NavigateToPath(p);
+        if (line >= 0) {
+            if (isDatRow)
+                m_ContentPanel.ScrollToRow(line);
+            else
+                m_ContentPanel.ScrollToLine(line);
+        }
+    });
+    m_isLoaded = true;
+
+    // Populate status bar
+    m_StatusBar.fileCount = m_Tree.GetFileCount();
+    m_StatusBar.dirCount = m_Tree.GetDirCount();
+    m_StatusBar.totalSize = m_Tree.GetTotalSize();
 }
 
 // ---------------------------------------------------------------------------
@@ -432,99 +571,18 @@ void GGPKExplorer::RenderMainContent() {
     // Async GGPK load — non-blocking, spinner while loading
     // ====================================================================
     if (m_ggpkLoadPending) {
-        if (m_openFuture.valid()) {
-            // Check if async open completed
-            if (m_openFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-                auto result = m_openFuture.get();
-                m_ggpkLoadPending = false;
-                if (result) {
-                    // Post-load setup (same as the synchronous path in OpenGGPK)
-                    {
-                        const char* modeStr = (m_Manager.GetMode() == GGPKExp::SourceMode::StandaloneGGPK) ? "GGPK" : "Bundles";
-                        PluginLog(ctx(), "Info", "GGPKExplorer: opened %s (mode: %s)", m_GgpkPath.c_str(), modeStr);
-                    }
-                    auto savedBookmarks = m_Tree.GetBookmarks();
-                    m_Tree.BuildFromManager(m_Manager);
-                    if (!savedBookmarks.empty())
-                        m_Tree.SetBookmarks(std::move(savedBookmarks));
-                    m_ContentPanel.SetManager(&m_Manager);
-                    m_ContentPanel.SetVirtualTree(&m_Tree);
-                    if (ctx()->D3DDevice)
-                        m_ContentPanel.SetD3DDevice(static_cast<ID3D11Device*>(ctx()->D3DDevice));
-                    m_TreePanel.SetTree(&m_Tree);
-                    if (m_quickJump) m_quickJump->SetTree(&m_Tree);
-                    m_TreePanel.SetOnSelect([this](const GGPKExp::TreeEntry& entry) {
-                        m_SelectedFilePath = entry.fullPath;
-                        m_SelectedIsDirectory = entry.isDirectory;
-                        m_StatusBar.selectedName = entry.name;
-                        m_StatusBar.selectedSize = entry.fileSize;
-                        m_NavBar.Navigate(entry.fullPath);
-                        if (!entry.isDirectory) {
-                            m_ContentPanel.LoadFile(entry.fullPath, entry.name,
-                                                    entry.fileSize, entry.type, entry.nodePtr);
-                        } else {
-                            m_ContentPanel.Clear();
-                        }
-                    });
-                    m_SearchDialog.SetTree(&m_Tree);
-                    m_SearchDialog.SetManager(&m_Manager);
-                    m_SearchDialog.SetDatSchema(CurrentDatSchema());
-                    m_SearchDialog.SetFileSearcher(&m_FileSearcher);
-                    m_SearchDialog.SetContentSearcher(&m_ContentSearcher);
-                    m_SearchDialog.SetDatSearcher(&m_DatSearcher);
-                    m_SearchDialog.SetOnResults([this](const GGPKExp::SearchResult& sr) {
-                        m_ResultsPanel.ShowSearchResults(sr);
-                    });
-                    m_SearchDialog.SetOnReplaceLog([this](const std::vector<GGPKExp::ReplaceResult>& rr) {
-                        m_ResultsPanel.ShowReplaceLog(rr);
-                    });
-                    m_SearchDialog.SetOnNavigateToLine([this](const std::string& p, int line) {
-                        NavigateToPath(p);
-                        m_ContentPanel.ScrollToLine(line);
-                    });
-                    m_ResultsPanel.SetOnNavigate([this](const std::string& p, int line, bool isDatRow) {
-                        NavigateToPath(p);
-                        if (line >= 0) {
-                            if (isDatRow)
-                                m_ContentPanel.ScrollToRow(line);
-                            else
-                                m_ContentPanel.ScrollToLine(line);
-                        }
-                    });
-                    m_isLoaded = true;
-
-                    // Populate status bar
-                    m_StatusBar.fileCount = m_Tree.GetFileCount();
-                    m_StatusBar.dirCount = m_Tree.GetDirCount();
-                    m_StatusBar.totalSize = m_Tree.GetTotalSize();
-                } else {
-                    m_isLoaded = false;
-                    PluginLog(ctx(), "Error", "GGPKExplorer: failed to open: %s", result.error.c_str());
-                }
-                return; // skip rest of rendering this frame
-            }
+        if (m_openFuture.valid() &&
+            m_openFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            GGPKExp::Result<void> result = GGPKExp::Result<void>::Fail("Unknown error while opening the game files");
+            try {
+                result = m_openFuture.get();
+            } catch (...) {}
+            FinishLoad(result);
+            return; // skip rest of rendering this frame
         }
 
         // Still loading — draw spinner overlay
-        ImVec2 winPos = ImGui::GetWindowPos();
-        ImVec2 winSize = ImGui::GetWindowSize();
-        ImVec2 center(winPos.x + winSize.x * 0.5f, winPos.y + winSize.y * 0.5f);
-        float radius = 24.0f;
-        float t = static_cast<float>(ImGui::GetTime());
-        auto* drawList = ImGui::GetForegroundDrawList();
-        drawList->AddRectFilled(winPos, ImVec2(winPos.x + winSize.x, winPos.y + winSize.y),
-            IM_COL32(0, 0, 0, 100));
-        int segments = 12;
-        for (int i = 0; i < segments; ++i) {
-            float angle = t * 5.0f + static_cast<float>(i) * 3.14159265f * 2.0f / static_cast<float>(segments);
-            float alpha = static_cast<float>(segments - i) / static_cast<float>(segments);
-            ImVec2 p(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
-            drawList->AddCircleFilled(p, 3.5f, IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)));
-        }
-        const char* loadingText = I18n::Tr("status_loading");
-        ImVec2 textSize = ImGui::CalcTextSize(loadingText);
-        drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y + radius + 12.0f),
-            IM_COL32(255, 255, 255, 255), loadingText);
+        DrawBusyOverlay(I18n::Tr("status_loading"));
         return; // skip rest of rendering this frame
     }
 
@@ -534,29 +592,18 @@ void GGPKExplorer::RenderMainContent() {
     if (m_savePending) {
         if (m_saveFuture.valid() &&
             m_saveFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-            m_saveFuture.get();
+            std::string error;
+            try {
+                error = m_saveFuture.get();
+            } catch (...) {
+                error = "unknown error";
+            }
+            if (!error.empty())
+                PluginLog(ctx(), "Error", "GGPKExplorer: saving the replaced files failed: %s", error.c_str());
             m_savePending = false;
         } else {
             // Still saving — draw spinner overlay
-            ImVec2 winPos = ImGui::GetWindowPos();
-            ImVec2 winSize = ImGui::GetWindowSize();
-            ImVec2 center(winPos.x + winSize.x * 0.5f, winPos.y + winSize.y * 0.5f);
-            float radius = 24.0f;
-            float t = static_cast<float>(ImGui::GetTime());
-            auto* drawList = ImGui::GetForegroundDrawList();
-            drawList->AddRectFilled(winPos, ImVec2(winPos.x + winSize.x, winPos.y + winSize.y),
-                IM_COL32(0, 0, 0, 100));
-            int segments = 12;
-            for (int i = 0; i < segments; ++i) {
-                float angle = t * 5.0f + static_cast<float>(i) * 3.14159265f * 2.0f / static_cast<float>(segments);
-                float alpha = static_cast<float>(segments - i) / static_cast<float>(segments);
-                ImVec2 p(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
-                drawList->AddCircleFilled(p, 3.5f, IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)));
-            }
-            const char* savingText = I18n::Tr("status_saving");
-            ImVec2 textSize = ImGui::CalcTextSize(savingText);
-            drawList->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y + radius + 12.0f),
-                IM_COL32(255, 255, 255, 255), savingText);
+            DrawBusyOverlay(I18n::Tr("status_saving"));
             return; // skip rest of rendering this frame
         }
     }
@@ -615,7 +662,7 @@ void GGPKExplorer::RenderMainContent() {
             ofn.lpstrTitle = title.c_str();
 
             if (GetOpenFileNameW(&ofn)) {
-                std::string utf8Path = WideToUtf8(filePath);
+                std::string utf8Path = GGPKExp::PathUtils::WideToUtf8(filePath);
                 if (!utf8Path.empty()) {
                     m_GgpkPath = utf8Path;
                 }
@@ -628,46 +675,12 @@ void GGPKExplorer::RenderMainContent() {
         const char* loadLabel = I18n::TrId("toolbar_load");
         if (ImGui::Button(loadLabel, ImVec2(GGPKExp::ButtonWidth(loadLabel, 7.5f), 0.0f)) && !m_ggpkLoadPending) {
             if (!m_GgpkPath.empty() && m_taskRunner) {
-                // Game-running gate: PoE holds a lock on the GGPK file while the
-                // process is alive. DISABLED 2026-09-04 --
-                // on patch day the files have to come out of the new build while
-                // the client is still up, and the gate refuses before anything is
-                // even attempted. The lock is not always exclusive, and when it is,
-                // the open fails on its own with a precise message
-                // (lib/ggpk/Bundle.cpp:23, "file is locked by another process"),
-                // which is strictly more informative than refusing up front.
-                // Flip this back to true to restore the pre-emptive modal.
-                static constexpr bool kBlockLoadWhileGameRuns = false;
-                if (kBlockLoadWhileGameRuns && ctx()->Game.IsAttached()) {
-                    m_ShowGameRunningModal = true;
-                } else {
-                    // Reset UI state before async open
-                    m_Manager.Close();
-                    m_Tree.Clear();
-                    m_NavBar.Clear();
-                    m_SelectedFilePath.clear();
-                    m_ContentPanel.Clear();
-                    m_StatusBar.fileCount = 0;
-                    m_StatusBar.dirCount = 0;
-                    m_StatusBar.totalSize = 0;
-                    m_StatusBar.selectedName.clear();
-                    m_StatusBar.selectedSize = -1;
-                    m_StatusBar.progress.store(0.0f);
-                    m_StatusBar.progressActive.store(false);
-                    m_StatusBar.progressLabel = {};
-                    m_isLoaded = false;
-
-                    // Initialize Oodle if needed
-                    if (!m_OodleInitialized) {
-                        m_OodleInitialized = GGPKExp::GGPKManager::InitOodle("");
-                        if (m_OodleInitialized) {
-                            PluginLog(ctx(), "Info", "GGPKExplorer: Oodle initialized");
-                        }
-                    }
-
-                    m_ggpkLoadPending = true;
-                    m_openFuture = m_Manager.OpenAsync(m_GgpkPath, *m_taskRunner);
-                }
+                // No "game is running" gate: on patch day the files have to come out of the
+                // new build while the client is still up. The library reads without write
+                // access (and falls back to read-only when the game holds the files), so the
+                // open works; a write then fails with a precise message.
+                ResetLoadedState();
+                StartLoad();
             }
         }
 
@@ -676,18 +689,7 @@ void GGPKExplorer::RenderMainContent() {
             ImGui::SameLine();
             const char* unloadLabel = I18n::TrId("toolbar_unload");
             if (ImGui::Button(unloadLabel, ImVec2(GGPKExp::ButtonWidth(unloadLabel, 7.5f), 0.0f))) {
-                m_Manager.Close();
-                m_Tree.Clear();
-                m_NavBar.Clear();
-                m_ContentPanel.Clear();
-                m_SelectedFilePath.clear();
-                m_SelectedIsDirectory = false;
-                m_StatusBar.fileCount = 0;
-                m_StatusBar.dirCount = 0;
-                m_StatusBar.totalSize = 0;
-                m_StatusBar.selectedName.clear();
-                m_StatusBar.selectedSize = -1;
-                m_isLoaded = false;
+                ResetLoadedState();
             }
         }
 
@@ -727,6 +729,21 @@ void GGPKExplorer::RenderMainContent() {
             }
         }
 
+        // A running extraction or Save As: its Cancel button (its progress bar is in the
+        // status bar). The job stops on its own thread; the button goes when it has.
+        if (m_extractDialog && m_extractDialog->IsExtractRunning()) {
+            ImGui::SameLine();
+            const char* cancelLabel = I18n::TrId("toolbar_cancel_extract");
+            if (ImGui::Button(cancelLabel, ImVec2(GGPKExp::ButtonWidth(cancelLabel, 7.5f), 0.0f)))
+                m_extractDialog->CancelExtract();
+        }
+        if (m_saveAsExporter && m_saveAsExporter->IsRunning()) {
+            ImGui::SameLine();
+            const char* cancelLabel = I18n::TrId("toolbar_cancel_save_as");
+            if (ImGui::Button(cancelLabel, ImVec2(GGPKExp::ButtonWidth(cancelLabel, 7.5f), 0.0f)))
+                m_saveAsExporter->Cancel();
+        }
+
         // Status text (Loading / Error / Not loaded) — rendered after all buttons; it takes
         // the next line when the rest of the row is too narrow for it (a translation is often
         // longer than the English text).
@@ -746,26 +763,6 @@ void GGPKExplorer::RenderMainContent() {
             if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize(statusText).x)
                 ImGui::NewLine();
             ImGui::TextColored(statusColor, "%s", statusText);
-        }
-
-        // ------------------------------------------------------------------
-        // Game-running warning modal (paired with the Load button gate above).
-        // ------------------------------------------------------------------
-        if (m_ShowGameRunningModal) {
-            ImGui::OpenPopup("##GGPKGameRunning");
-            m_ShowGameRunningModal = false;
-        }
-        if (ImGui::BeginPopupModal("##GGPKGameRunning", nullptr,
-                                    ImGuiWindowFlags_AlwaysAutoResize |
-                                    ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::TextWrapped("%s", I18n::Tr("game_running_title"));
-            ImGui::TextWrapped("%s", I18n::Tr("game_running_body"));
-            ImGui::Spacing();
-            const char* okLabel = I18n::TrId("common_ok");
-            if (ImGui::Button(okLabel, ImVec2(GGPKExp::ButtonWidth(okLabel, 9.0f), 0))) {
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::EndPopup();
         }
     }
 
@@ -921,11 +918,7 @@ void GGPKExplorer::RenderMainContent() {
         // Note: m_uiSettings.playbackSpeed is already kept up-to-date via the
         // pointer mechanism — AnimationSidePanel's combo writes through
         // *m_playbackSpeed which points at m_uiSettings.playbackSpeed directly
-        // (see SetPlaybackSpeedPtr wiring). Explicitly re-reading it from
-        // GetCurrentPlaybackSpeed() is not only redundant but a regression path
-        // when the dirty-source is NOT a Mesh/Aoc viewer (e.g. PSG language
-        // combo): GetCurrentPlaybackSpeed() returns the hardcoded 1.0f default
-        // for non-mesh/aoc types, stomping the user's saved speed.
+        // (see SetPlaybackSpeedPtr wiring); nothing to copy back here.
         m_uiSettingsDirtyTickMs = GetTickCount();
         // Defensive: if OnEnable somehow didn't run but the user managed to
         // interact, commit to managing ui.json from now on.
@@ -972,6 +965,9 @@ void GGPKExplorer::RenderMainContent() {
     if (m_extractDialog) {
         m_extractDialog->RenderExtractOptions();
     }
+    if (m_saveAsExporter) {
+        m_saveAsExporter->UpdateProgress();
+    }
 
     // ====================================================================
     // Quick Jump popup (Ctrl+P)
@@ -981,12 +977,23 @@ void GGPKExplorer::RenderMainContent() {
     }
 
     // ====================================================================
-    // Auto-flush: if any writes are pending, start async save with spinner
+    // Auto-flush: if any writes are pending, start async save with spinner.
+    // Never while a job runs (a replace job writes, the others read): the
+    // flush waits until they ended, and the spinner keeps new ones from starting.
     // ====================================================================
-    if (!m_savePending && m_Manager.HasPendingWrites()) {
+    if (!m_savePending && m_Manager.HasPendingWrites() && !AnyJobRunning()) {
         m_savePending = true;
-        m_saveFuture = std::async(std::launch::async, [this]() {
-            return m_Manager.FlushWrites();
+        m_saveFuture = std::async(std::launch::async, [this]() -> std::string {
+            std::string error;
+            try {
+                if (!m_Manager.FlushWrites(&error) && error.empty())
+                    error = "unknown error";
+            } catch (const std::exception& ex) {
+                error = ex.what();
+            } catch (...) {
+                error = "unknown error";
+            }
+            return error;
         });
     }
 }
@@ -1014,7 +1021,6 @@ void GGPKExplorer::SaveSettings() {
     SetDatEditorPanelWidth(m_ContentPanel.GetDatEditorPanelWidth());
 
     json j;
-    j["showWindow"] = m_ShowWindow;
     j["splitterRatio"] = m_SplitterRatio;
     j["sortMode"] = static_cast<int>(m_Tree.GetSortMode());
     j["ggpkPath"] = m_GgpkPath;
@@ -1061,14 +1067,12 @@ void GGPKExplorer::SaveSettings() {
 void GGPKExplorer::LoadSettings() {
     fs::path settingsPath = DirectoryPath() / "config" / "settings.json";
 
-    // Try new JSON format first
     if (fs::exists(settingsPath)) {
         std::ifstream file{ settingsPath };
         if (file.is_open()) {
             try {
                 json j = json::parse(file);
 
-                if (j.contains("showWindow"))    m_ShowWindow = j["showWindow"].get<bool>();
                 if (j.contains("splitterRatio")) m_SplitterRatio = j["splitterRatio"].get<float>();
                 if (j.contains("ggpkPath") && j["ggpkPath"].is_string())
                     m_GgpkPath = j["ggpkPath"].get<std::string>();
@@ -1105,20 +1109,6 @@ void GGPKExplorer::LoadSettings() {
                 }
             } catch (...) {
                 // Ignore parse errors, use defaults
-            }
-        }
-    } else {
-        // Try legacy settings.txt (from previous version)
-        fs::path legacyPath = DirectoryPath() / "config" / "settings.txt";
-        if (fs::exists(legacyPath)) {
-            std::ifstream file{ legacyPath };
-            std::string line;
-            while (std::getline(file, line)) {
-                auto eq = line.find('=');
-                if (eq == std::string::npos) continue;
-                std::string key = line.substr(0, eq);
-                std::string val = line.substr(eq + 1);
-                if (key == "ShowWindow") m_ShowWindow = (val == "1");
             }
         }
     }
@@ -1161,9 +1151,10 @@ std::string GGPKExplorer::ReadSmootherGGPKPath() {
         }
     }
 
-    // 2. Try Configs/general/general_config.json -> "smootherGGPKPath"
+    // 2. Try the program's general config, Configs/general/config.json -> "smootherGGPKPath"
+    //    (POEFixer/core/AppPaths.h AppPaths::Config::General, written by Config::saveGeneral)
     {
-        fs::path generalCfg = exeDir / "Configs" / "general" / "general_config.json";
+        fs::path generalCfg = exeDir / "Configs" / "general" / "config.json";
         if (fs::exists(generalCfg)) {
             try {
                 std::ifstream file{ generalCfg };
@@ -1187,170 +1178,17 @@ std::string GGPKExplorer::ReadSmootherGGPKPath() {
 }
 
 // ---------------------------------------------------------------------------
-// OpenGGPK
-// ---------------------------------------------------------------------------
-
-void GGPKExplorer::OpenGGPK(const std::string& path) {
-    if (path.empty()) {
-        PluginLog(ctx(), "Error", "GGPKExplorer: empty path");
-        return;
-    }
-
-    // Initialize Oodle if not already loaded
-    if (!m_OodleInitialized) {
-        m_OodleInitialized = GGPKExp::GGPKManager::InitOodle("");
-        if (m_OodleInitialized) {
-            PluginLog(ctx(), "Info", "GGPKExplorer: Oodle initialized");
-        }
-    }
-
-    // Close previous
-    m_Manager.Close();
-    m_Tree.Clear();
-    m_NavBar.Clear();
-    m_SelectedFilePath.clear();
-    m_ContentPanel.Clear();
-
-    // Reset status bar (atomics are not assignable, so reset each field)
-    m_StatusBar.fileCount = 0;
-    m_StatusBar.dirCount = 0;
-    m_StatusBar.totalSize = 0;
-    m_StatusBar.selectedName.clear();
-    m_StatusBar.selectedSize = -1;
-    m_StatusBar.progress.store(0.0f);
-    m_StatusBar.progressActive.store(false);
-    m_StatusBar.progressLabel = {};
-
-    // Open
-    auto openResult = m_Manager.Open(path);
-    if (!openResult) {
-        PluginLog(ctx(), "Error", "GGPKExplorer: failed to open: %s", m_Manager.GetError().c_str());
-        return;
-    }
-
-    {
-        const char* modeStr = (m_Manager.GetMode() == GGPKExp::SourceMode::StandaloneGGPK) ? "GGPK" : "Bundles";
-        PluginLog(ctx(), "Info", "GGPKExplorer: opened %s (mode: %s)", path.c_str(), modeStr);
-    }
-
-    // Restore bookmarks into tree before building (they persist across loads)
-    auto savedBookmarks = m_Tree.GetBookmarks();
-
-    // Build virtual tree
-    m_Tree.BuildFromManager(m_Manager);
-
-    // Restore bookmarks
-    if (!savedBookmarks.empty()) {
-        m_Tree.SetBookmarks(std::move(savedBookmarks));
-    }
-
-    // Connect content panel to manager
-    m_ContentPanel.SetManager(&m_Manager);
-    m_ContentPanel.SetVirtualTree(&m_Tree);
-
-    // Provide D3D device for image viewer
-    if (ctx()->D3DDevice) {
-        m_ContentPanel.SetD3DDevice(static_cast<ID3D11Device*>(ctx()->D3DDevice));
-    }
-
-    // Connect tree panel
-    m_TreePanel.SetTree(&m_Tree);
-    if (m_quickJump) m_quickJump->SetTree(&m_Tree);
-    m_TreePanel.SetOnSelect([this](const GGPKExp::TreeEntry& entry) {
-        m_SelectedFilePath = entry.fullPath;
-        m_SelectedIsDirectory = entry.isDirectory;
-        m_StatusBar.selectedName = entry.name;
-        m_StatusBar.selectedSize = entry.fileSize;
-        m_NavBar.Navigate(entry.fullPath);
-        if (!entry.isDirectory) {
-            m_ContentPanel.LoadFile(entry.fullPath, entry.name,
-                                    entry.fileSize, entry.type, entry.nodePtr);
-        } else {
-            m_ContentPanel.Clear();
-        }
-    });
-
-    // Connect search system
-    m_SearchDialog.SetTree(&m_Tree);
-    m_SearchDialog.SetManager(&m_Manager);
-    m_SearchDialog.SetDatSchema(CurrentDatSchema());
-    m_SearchDialog.SetFileSearcher(&m_FileSearcher);
-    m_SearchDialog.SetContentSearcher(&m_ContentSearcher);
-    m_SearchDialog.SetDatSearcher(&m_DatSearcher);
-    m_SearchDialog.SetOnResults([this](const GGPKExp::SearchResult& result) {
-        m_ResultsPanel.ShowSearchResults(result);
-    });
-    m_SearchDialog.SetOnReplaceLog([this](const std::vector<GGPKExp::ReplaceResult>& results) {
-        m_ResultsPanel.ShowReplaceLog(results);
-    });
-    m_SearchDialog.SetOnNavigateToLine([this](const std::string& path, int line) {
-        NavigateToPath(path);
-        m_ContentPanel.ScrollToLine(line);
-    });
-    m_ResultsPanel.SetOnNavigate([this](const std::string& path, int line, bool isDatRow) {
-        NavigateToPath(path);
-        if (line >= 0) {
-            if (isDatRow)
-                m_ContentPanel.ScrollToRow(line);
-            else
-                m_ContentPanel.ScrollToLine(line);
-        }
-    });
-
-    // Update status bar
-    m_StatusBar.fileCount = m_Tree.GetFileCount();
-    m_StatusBar.dirCount = m_Tree.GetDirCount();
-    m_StatusBar.totalSize = m_Tree.GetTotalSize();
-}
-
-// ---------------------------------------------------------------------------
 // Recursive expand/collapse helpers
 // ---------------------------------------------------------------------------
 
 void GGPKExplorer::ExpandAllRecursive(const std::string& path) {
-    // ExpandTo already expands all ancestors, but we need to expand
-    // the node itself AND all its descendants.
-    m_Tree.ExpandTo(path);
-
-    // Now iterate the flat list and expand every directory that is a descendant
-    // We need to loop because expanding a node changes the flat list.
-    // Strategy: keep expanding until no more unexpanded directories found.
-    std::string prefix = path + "/";
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        const auto& flatList = m_Tree.GetFlatList();
-        for (uint32_t i = 0; i < static_cast<uint32_t>(flatList.size()); ++i) {
-            const auto& e = flatList[i];
-            if (!e.isDirectory || e.isExpanded) continue;
-            if (e.fullPath == path || e.fullPath.compare(0, prefix.size(), prefix) == 0) {
-                m_Tree.ToggleExpand(i);
-                changed = true;
-                break; // flat list invalidated, restart
-            }
-        }
-    }
+    // The node, its ancestors and every folder below it, then one relinearize.
+    m_Tree.ExpandSubtree(path);
 }
 
 void GGPKExplorer::CollapseAllRecursive(const std::string& path) {
-    // Collapse all expanded descendants first, then the node itself.
-    // Iterate from the bottom up to avoid index invalidation issues.
-    std::string prefix = path + "/";
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        const auto& flatList = m_Tree.GetFlatList();
-        for (uint32_t i = static_cast<uint32_t>(flatList.size()); i > 0; --i) {
-            uint32_t idx = i - 1;
-            const auto& e = flatList[idx];
-            if (!e.isDirectory || !e.isExpanded) continue;
-            if (e.fullPath == path || e.fullPath.compare(0, prefix.size(), prefix) == 0) {
-                m_Tree.ToggleExpand(idx);
-                changed = true;
-                break; // flat list invalidated, restart
-            }
-        }
-    }
+    // The node and every folder below it, then one relinearize.
+    m_Tree.CollapseSubtree(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -1478,6 +1316,6 @@ extern "C" PLUGIN_API void DestroyPlugin(PluginSDK::Plugin* plugin) { delete plu
 POEFIXER_PLUGIN_INFO(
     "GGPKExplorer",
     "GGPK Explorer",
-    "1.0.3",
+    "1.0.4",
     "POEFixer",
     "Browses the game's content files: searchable file tree, viewers for tables, images, models and audio, and file extraction.")

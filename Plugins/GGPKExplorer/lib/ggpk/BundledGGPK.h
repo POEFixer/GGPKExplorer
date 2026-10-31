@@ -12,9 +12,13 @@ namespace GGPK {
 /// Entry point for standalone client patching.
 class BundledGGPK {
 public:
-    /// Open a Content.ggpk file and parse the internal bundle index.
-    explicit BundledGGPK(const std::string& filePath, bool parsePaths = true) {
-        m_ggpk = std::make_unique<GGPKFile>(filePath);
+    /// Open a Content.ggpk file (UTF-8 path) and parse the internal bundle index.
+    /// ReadWrite: read-write with a read-only fallback when that is refused (the running
+    /// game); ReadOnly: never asks for write access. A read-only GGPK makes the Index
+    /// read-only too: FileRecord::Write and SaveIndex throw a clear error.
+    explicit BundledGGPK(const std::string& filePath, bool parsePaths = true,
+                         OpenMode mode = OpenMode::ReadWrite) {
+        m_ggpk = std::make_unique<GGPKFile>(filePath, mode);
 
         auto* root = m_ggpk->GetRoot();
         auto* bundles2 = root->FindChild("Bundles2");
@@ -32,7 +36,10 @@ public:
         auto factory = std::make_unique<GGPKBundleFactory>(m_ggpk.get(), bundles2);
 
         // Create the Index from the bundle data
-        m_index = std::make_unique<Index>(std::move(indexData), parsePaths, std::move(factory));
+        m_index = std::make_unique<Index>(std::move(indexData), parsePaths, std::move(factory),
+                                          m_ggpk->IsReadOnly() ? OpenMode::ReadOnly : OpenMode::ReadWrite);
+        if (m_ggpk->IsReadOnly())
+            m_index->MarkReadOnly("Content.ggpk is open read-only: " + m_ggpk->GetReadOnlyReason());
 
         m_indexNode = indexNode;
     }
@@ -53,7 +60,7 @@ public:
     /// After writing, renews the SHA-256 hash chain while preserving Root hash
     /// (prevents the game from detecting modifications and triggering re-patching).
     void SaveIndex() {
-        m_index->Save();
+        m_index->Save();   // throws before writing anything when read-only
 
         auto* baseBundle = m_index->GetBaseBundle();
         if (baseBundle && baseBundle->IsMemoryBased()) {

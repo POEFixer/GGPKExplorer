@@ -1,4 +1,5 @@
 #pragma once
+#include "FileAccess.h"
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -76,9 +77,16 @@ struct GGPKTreeNode {
 
 /// Handles Content.ggpk file for standalone PoE installations.
 /// Simplified reader that navigates to Bundles2/_.index.bin for bundle-based patching.
+///
+/// Paths are UTF-8. Reads (the record walk at open, ReadAt / ReadFileContent and the bundles
+/// read from inside it) go through a read-only handle with positional reads: thread-safe and
+/// never blocking the game. Writes keep using the read-write stream under m_streamMutex.
 class GGPKFile {
 public:
-    explicit GGPKFile(const std::string& filePath);
+    /// ReadWrite (default): Content.ggpk opened read-write for in-place writes; when that is
+    /// refused (the running game) it opens read-only and the write methods throw a clear
+    /// error naming why. ReadOnly: never asks for write access.
+    explicit GGPKFile(const std::string& filePath, OpenMode mode = OpenMode::ReadWrite);
     ~GGPKFile();
 
     GGPKFile(const GGPKFile&) = delete;
@@ -90,8 +98,21 @@ public:
     /// Read file content from a GGPK file node
     std::vector<uint8_t> ReadFileContent(const GGPKTreeNode* node);
 
-    /// Thread-safe atomic read: seek + read under a single lock
+    /// Thread-safe positional read; a short read returns the bytes that exist, an error {}.
     std::vector<uint8_t> ReadAt(int64_t offset, int32_t size);
+
+    /// Thread-safe positional read of exactly `size` bytes; throws std::runtime_error(what).
+    void ReadExact(int64_t offset, void* buffer, size_t size,
+                   const std::string& what = "Failed to read from GGPK file") const;
+
+    /// Size of Content.ggpk when it was opened.
+    int64_t GetFileSize() const { return m_readFile.Size(); }
+
+    /// True when opened ReadOnly or when the read-write open was refused.
+    bool IsReadOnly() const { return m_readOnly; }
+
+    /// Why the file is read-only (empty when writable).
+    const std::string& GetReadOnlyReason() const { return m_readOnlyReason; }
 
     /// Write file content to a GGPK file node (must fit in existing space or use free space)
     void WriteFileContent(GGPKTreeNode* node, const uint8_t* data, int32_t size);
@@ -120,17 +141,31 @@ public:
     std::mutex& GetStreamMutex() { return m_streamMutex; }
 
     /// Flush changes to disk
-    void Flush() { m_stream.flush(); }
+    void Flush() { if (!m_readOnly) m_stream.flush(); }
 
 private:
     /// Read a record header at the given offset
     GGPKRecordInfo ReadRecordInfo(int64_t offset);
+
+    /// Read one record (length, tag and the bytes its header needs) in one read where it
+    /// fits m_scratch, a second read only for the rest of a long record.
+    int32_t LoadRecord(int64_t offset, size_t needAtLeast);
+
+    /// Make sure m_scratch holds `size` bytes of the record at `offset` (reads the rest).
+    void EnsureRecordBytes(int64_t offset, size_t size);
 
     /// Read and populate a directory node
     void ReadDirectoryRecord(int64_t offset, GGPKTreeNode& node);
 
     /// Read and populate a file node
     void ReadFileRecord(int64_t offset, GGPKTreeNode& node);
+
+    /// Populate from the record bytes already in m_scratch.
+    void ParseDirectoryRecord(int64_t offset, GGPKTreeNode& node);
+    void ParseFileRecord(int64_t offset, GGPKTreeNode& node);
+
+    /// Throws a clear error when the file is read-only.
+    void ThrowIfReadOnly(const char* operation) const;
 
     /// Recursively read the tree starting from a directory node
     void ReadTree(GGPKTreeNode& dirNode);
@@ -146,6 +181,11 @@ private:
     void RenewDirectoryHash(GGPKTreeNode* dirNode);
 
     std::fstream m_stream;
+    ReadOnlyFile m_readFile;
+    bool m_readOnly = false;
+    std::string m_readOnlyReason;
+    std::vector<uint8_t> m_scratch;     // record walk at open (single-threaded)
+    size_t m_scratchValid = 0;
     std::string m_filePath;
     uint32_t m_version = 3;
     int64_t m_rootOffset = 0;

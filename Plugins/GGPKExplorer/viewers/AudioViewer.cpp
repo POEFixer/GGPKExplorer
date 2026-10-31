@@ -8,6 +8,16 @@
 #define STB_VORBIS_HEADER_ONLY
 #include "../lib/stb_vorbis.c"
 
+// The one miniaudio implementation of the plugin: only the decoder and the
+// playback device are used, so the high-level engine, the node graph, the
+// resource manager, encoding and sound generation are left out, and so is
+// the FLAC decoder (.flac is not an audio type here; see FileTypeDetector).
+#define MA_NO_ENGINE
+#define MA_NO_NODE_GRAPH
+#define MA_NO_RESOURCE_MANAGER
+#define MA_NO_ENCODING
+#define MA_NO_GENERATION
+#define MA_NO_FLAC
 #define MINIAUDIO_IMPLEMENTATION
 #include "../lib/miniaudio.h"
 
@@ -72,7 +82,6 @@ std::string AudioViewer::DetectFormat(const std::string& filename)
     if (ext == ".wav")  return "WAV";
     if (ext == ".mp3")  return "MP3";
     if (ext == ".ogg")  return "OGG Vorbis";
-    if (ext == ".flac") return "FLAC";
     return "Audio";
 }
 

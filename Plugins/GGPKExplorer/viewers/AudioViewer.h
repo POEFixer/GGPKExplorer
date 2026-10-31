@@ -15,7 +15,6 @@ public:
     void LoadData(std::vector<uint8_t> data, const std::string& path) override;
     void Clear() override;
     void Render() override;
-    bool IsPlaying() const { return m_playing; }
 
 private:
     struct AudioEngine;

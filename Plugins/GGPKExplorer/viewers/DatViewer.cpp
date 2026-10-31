@@ -11,9 +11,6 @@
 #include "../lib/json.hpp"
 #include "../../../POEFixer/imgui/IconsFontAwesome6.h"
 #include "editors/IconHelpers.h"
-#ifdef _DEBUG
-#include "../dev/DatRoundTripTest.h"
-#endif
 #include <imgui.h>
 #include <fstream>
 #include <sstream>
@@ -464,8 +461,7 @@ void DatViewer::Render()
             wchar_t filePath[MAX_PATH] = {};
             // Pre-fill with table name
             std::string defaultName = m_tableName + ".csv";
-            for (size_t i = 0; i < defaultName.size() && i < MAX_PATH - 1; ++i)
-                filePath[i] = static_cast<wchar_t>(defaultName[i]);
+            wcsncpy_s(filePath, PathUtils::Utf8ToWide(defaultName).c_str(), _TRUNCATE);
 
             OPENFILENAMEW ofn = {};
             ofn.lStructSize = sizeof(ofn);
@@ -476,10 +472,8 @@ void DatViewer::Render()
             ofn.lpstrDefExt = L"csv";
 
             if (GetSaveFileNameW(&ofn)) {
-                int needed = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, nullptr, 0, nullptr, nullptr);
-                if (needed > 0) {
-                    std::string utf8(static_cast<size_t>(needed - 1), '\0');
-                    WideCharToMultiByte(CP_UTF8, 0, filePath, -1, utf8.data(), needed, nullptr, nullptr);
+                const std::string utf8 = PathUtils::WideToUtf8(filePath);
+                if (!utf8.empty()) {
                     ExportCSV(utf8);
                 }
             }
@@ -490,8 +484,7 @@ void DatViewer::Render()
         if (ImGui::Button(lblExportJson.c_str())) {
             wchar_t filePath2[MAX_PATH] = {};
             std::string defaultName2 = m_tableName + ".json";
-            for (size_t i = 0; i < defaultName2.size() && i < MAX_PATH - 1; ++i)
-                filePath2[i] = static_cast<wchar_t>(defaultName2[i]);
+            wcsncpy_s(filePath2, PathUtils::Utf8ToWide(defaultName2).c_str(), _TRUNCATE);
 
             OPENFILENAMEW ofn2 = {};
             ofn2.lStructSize = sizeof(ofn2);
@@ -502,10 +495,8 @@ void DatViewer::Render()
             ofn2.lpstrDefExt = L"json";
 
             if (GetSaveFileNameW(&ofn2)) {
-                int needed2 = WideCharToMultiByte(CP_UTF8, 0, filePath2, -1, nullptr, 0, nullptr, nullptr);
-                if (needed2 > 0) {
-                    std::string utf8_2(static_cast<size_t>(needed2 - 1), '\0');
-                    WideCharToMultiByte(CP_UTF8, 0, filePath2, -1, utf8_2.data(), needed2, nullptr, nullptr);
+                const std::string utf8_2 = PathUtils::WideToUtf8(filePath2);
+                if (!utf8_2.empty()) {
                     ExportJSON(utf8_2);
                 }
             }
@@ -524,10 +515,8 @@ void DatViewer::Render()
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
             ofn.lpstrDefExt = L"csv";
             if (GetOpenFileNameW(&ofn)) {
-                int needed = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, nullptr, 0, nullptr, nullptr);
-                if (needed > 0) {
-                    std::string utf8(static_cast<size_t>(needed - 1), '\0');
-                    WideCharToMultiByte(CP_UTF8, 0, filePath, -1, utf8.data(), needed, nullptr, nullptr);
+                const std::string utf8 = PathUtils::WideToUtf8(filePath);
+                if (!utf8.empty()) {
                     m_pendingImport = DatImporter::ImportCSV(utf8, *m_table);
                     m_pendingImportFormat = "csv";
                     m_importConfirmOpen = true;
@@ -550,10 +539,8 @@ void DatViewer::Render()
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
             ofn.lpstrDefExt = L"json";
             if (GetOpenFileNameW(&ofn)) {
-                int needed = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, nullptr, 0, nullptr, nullptr);
-                if (needed > 0) {
-                    std::string utf8(static_cast<size_t>(needed - 1), '\0');
-                    WideCharToMultiByte(CP_UTF8, 0, filePath, -1, utf8.data(), needed, nullptr, nullptr);
+                const std::string utf8 = PathUtils::WideToUtf8(filePath);
+                if (!utf8.empty()) {
                     m_pendingImport = DatImporter::ImportJSON(utf8, *m_table);
                     m_pendingImportFormat = "json";
                     m_importConfirmOpen = true;
@@ -562,24 +549,6 @@ void DatViewer::Render()
                 }
             }
         }
-
-#ifdef _DEBUG
-        ImGui::SameLine();
-        if (ImGui::Button("[Dev] Run Round-Trip Tests")) {
-            // The host ships the schema next to its exe, and pins the working
-            // directory to the exe folder.
-            const std::string schemaPath = "Resources/dat-schema/schema.min.json";
-            auto results = GGPKExp::Dev::RunAllRoundTrips(schemaPath);
-            for (const auto& r : results) {
-                char buf[512];
-                snprintf(buf, sizeof(buf),
-                         "[RoundTrip] %s: parsed=%d ser=%d reparsed=%d rowCount=%d allCells=%d | %s\n",
-                         r.fileName.c_str(), r.parsed, r.serialized, r.reparsed,
-                         r.rowCountMatches, r.allCellsMatch, r.detail.c_str());
-                OutputDebugStringA(buf);
-            }
-        }
-#endif
 
         // Save Changes button — shown when cells have been modified OR when an import is pending.
         if (!m_modifiedCells.empty() || m_importMode) {
@@ -1695,51 +1664,6 @@ void DatViewer::RenderCellContextMenu(int row, int col, const CellValue& val,
     if (ImGui::MenuItem(IconLabel(m_fa6Available, kIconFindRef, "Find all references to this row").c_str())) {
         OpenFindReferencesModal(row);
     }
-
-#ifdef _DEBUG
-    // Debug: inspect GGPK path resolution for string cells. Lets the user
-    // log the lookup result + a sample of indexed keys to DebugView for a
-    // failing "File not found in GGPK" cell. Reports BOTH the loose-file
-    // tree result (VirtualTree) and the authoritative GGPKManager result so
-    // any discrepancy (bundle-only files) is obvious.
-    if (colDef.type == ColumnType::String && std::holds_alternative<std::string>(val)) {
-        ImGui::Separator();
-        if (ImGui::MenuItem("[Dev] Inspect path resolution")) {
-            const auto& s = std::get<std::string>(val);
-            std::string lowered;
-            lowered.reserve(s.size());
-            for (char c : s)
-                lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-
-            const uint32_t treeFound = m_tree
-                ? m_tree->FindByPathInsensitive(s)
-                : UINT32_MAX;
-            const bool mgrFound = m_ggpkManager
-                && m_ggpkManager->FindNodeByPath(s) != nullptr;
-
-            const size_t prefixLen = (std::min)(static_cast<size_t>(12), lowered.size());
-            const std::string prefix = lowered.substr(0, prefixLen);
-            std::vector<std::string> keys;
-            if (m_tree) keys = m_tree->DebugFindKeysWithPrefix(prefix, 5);
-
-            char buf[1024];
-            snprintf(buf, sizeof(buf),
-                "[PathInspect] query='%s' lowered='%s' tree=%s mgr=%s tree_index=%zu prefix='%s' tree_matches=%zu\n",
-                s.c_str(), lowered.c_str(),
-                (treeFound == UINT32_MAX ? "NO" : "YES"),
-                (mgrFound ? "YES" : "NO"),
-                m_tree ? m_tree->GetPathIndexSize() : static_cast<size_t>(0),
-                prefix.c_str(),
-                keys.size());
-            OutputDebugStringA(buf);
-            for (const auto& k : keys) {
-                OutputDebugStringA("  tree key: ");
-                OutputDebugStringA(k.c_str());
-                OutputDebugStringA("\n");
-            }
-        }
-    }
-#endif
 
     ImGui::EndPopup();
 }

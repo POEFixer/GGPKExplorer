@@ -77,16 +77,31 @@ namespace NameHash {
         return hash;
     }
 
+    /// The lowering both hash sites apply before MurmurHash64A (Index::ParsePaths and
+    /// ComputeHash): A-Z to a-z, every other byte unchanged. This is exactly what
+    /// std::tolower did there: the process runs in the "C" locale (nothing in POEFixer, its
+    /// plugins or GameLibrary calls setlocale), where tolower maps A-Z only. Gate:
+    /// tools/ggpk_bundle_test hash_lowering (all 256 bytes against std::tolower).
+    inline constexpr uint8_t AsciiLower(uint8_t c) {
+        return (c >= 'A' && c <= 'Z') ? static_cast<uint8_t>(c + ('a' - 'A')) : c;
+    }
+
     /// Compute the path hash for a file path string.
     /// Automatically lowercases for MurmurHash (post-3.21.2).
     /// `useMurmur` should be true for PoE >= 3.21.2 (detected from _Directories[0].PathHash).
     inline uint64_t ComputeHash(const std::string& path, bool useMurmur) {
         if (useMurmur) {
-            // Lowercase the path first, then hash as UTF-8
-            std::string lower = path;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            return MurmurHash64A(reinterpret_cast<const uint8_t*>(lower.data()), lower.size());
+            // Lowercase the path first, then hash as UTF-8 (on the stack for usual paths)
+            uint8_t local[512];
+            std::string heap;
+            uint8_t* lower = local;
+            if (path.size() > sizeof(local)) {
+                heap.resize(path.size());
+                lower = reinterpret_cast<uint8_t*>(heap.data());
+            }
+            for (size_t i = 0; i < path.size(); ++i)
+                lower[i] = AsciiLower(static_cast<uint8_t>(path[i]));
+            return MurmurHash64A(lower, path.size());
         } else {
             // FNV1a does its own case conversion
             return FNV1a64Hash(reinterpret_cast<const uint8_t*>(path.data()), path.size());

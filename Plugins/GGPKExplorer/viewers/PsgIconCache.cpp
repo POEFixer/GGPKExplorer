@@ -78,14 +78,6 @@ bool PsgIconCache::LoadOne(const std::string& ggpkPath) {
     return true;
 }
 
-void PsgIconCache::PreloadAll(const std::vector<std::string>& ggpkPaths) {
-    if (!m_device || !m_manager) return;
-    for (const auto& path : ggpkPaths) {
-        if (path.empty()) continue;
-        LoadOne(path);
-    }
-}
-
 bool PsgIconCache::LoadOneSafe(const std::string& ggpkPath) {
     return LoadOneSafeImpl(this, &ggpkPath);
 }

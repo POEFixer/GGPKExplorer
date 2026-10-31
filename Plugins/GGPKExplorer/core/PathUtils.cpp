@@ -17,21 +17,26 @@ std::string ToLower(const std::string& str) {
 }
 
 std::filesystem::path FromUtf8(const std::string& utf8) {
-    if (utf8.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-    if (n <= 0) return std::filesystem::path(utf8);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), w.data(), n);
-    return std::filesystem::path(w);
+    return std::filesystem::path(Utf8ToWide(utf8));
 }
 
-std::string Normalize(const std::string& path) {
-    std::string result = path;
-    std::replace(result.begin(), result.end(), '\\', '/');
-    result = ToLower(result);
-    while (result.size() > 1 && result.back() == '/')
-        result.pop_back();
-    return result;
+std::string WideToUtf8(std::wstring_view wide) {
+    if (wide.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
+                                      nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+std::wstring Utf8ToWide(std::string_view utf8) {
+    if (utf8.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), n);
+    return out;
 }
 
 std::vector<std::string_view> Split(std::string_view path) {

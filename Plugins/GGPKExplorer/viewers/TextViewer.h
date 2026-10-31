@@ -40,7 +40,6 @@ public:
 
     bool HasUnsavedChanges() const;
     std::string GetText() const;
-    const std::string& Filename() const { return m_filename; }
     TextEncoding GetOriginalEncoding() const { return m_originalEncoding; }
     bool OriginalHadBom() const { return m_originalHadBom; }
     void SetOnSave(std::function<void(const std::string&)> cb) { m_onSave = std::move(cb); }
@@ -48,8 +47,6 @@ public:
 
     // Hyperlink navigation
     std::string pendingNavPath;     // set on Ctrl+Click, consumed by ContentPanel
-    const std::string& PendingNavPath() const { return pendingNavPath; }
-    void ClearPendingNavPath() { pendingNavPath.clear(); }
     void ShowNotFound(const std::string& path);
 
 private:

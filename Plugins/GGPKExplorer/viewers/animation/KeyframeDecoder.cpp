@@ -233,7 +233,8 @@ bool KeyframeDecoder::ParseBoneTrack(const uint8_t* base,
         return false;
     }
 
-    // Channel mapping (verified via AnimDump on witch attack1_2hsword 2026-04-14):
+    // Channel mapping (verified 2026-04-14 by dumping witch attack1_2hsword with
+    // the AnimDump dev tool, since removed):
     //   A (16 B) = SCALE      keyframes (time + xyz)
     //   B (20 B) = ROTATION   keyframes (time + xyzw quaternion) - both static and curve
     //   C (16 B) = TRANSLATION keyframes (time + xyz)

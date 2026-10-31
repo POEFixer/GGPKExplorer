@@ -1,6 +1,7 @@
 #include "DatExport.h"
 #include <fstream>
 #include <functional>
+#include <sstream>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -152,11 +153,9 @@ std::vector<std::vector<CellValue>> DecodeRows(const DatFile& dat, const SchemaT
     return rows;
 }
 
-bool WriteCsv(const std::filesystem::path& out, const DatFile& dat,
-              const SchemaTable& table, const std::vector<std::vector<CellValue>>& rows) {
-    std::ofstream f{out};
-    if (!f.is_open()) return false;
-
+// The CSV text of the rows, written to `f` (a file opened in text mode, or a string stream).
+static void WriteCsvTo(std::ostream& f, const DatFile& dat,
+                       const SchemaTable& table, const std::vector<std::vector<CellValue>>& rows) {
     auto cellToStringLambda = [](const CellValue& v, const ColumnDef* c) -> std::string {
         return CellToString(v, c);
     };
@@ -200,11 +199,19 @@ bool WriteCsv(const std::filesystem::path& out, const DatFile& dat,
         }
         f << '\n';
     }
+}
+
+bool WriteCsv(const std::filesystem::path& out, const DatFile& dat,
+              const SchemaTable& table, const std::vector<std::vector<CellValue>>& rows) {
+    std::ofstream f{out};
+    if (!f.is_open()) return false;
+    WriteCsvTo(f, dat, table, rows);
     return true;
 }
 
-bool WriteJson(const std::filesystem::path& out, const DatFile& dat,
-               const SchemaTable& table, const std::vector<std::vector<CellValue>>& rows) {
+// The JSON text of the rows (what WriteJson writes).
+static std::string JsonText(const DatFile& dat, const SchemaTable& table,
+                            const std::vector<std::vector<CellValue>>& rows) {
     nlohmann::ordered_json arr = nlohmann::ordered_json::array();
     for (size_t r = 0; r < rows.size(); ++r) {
         nlohmann::ordered_json obj;
@@ -251,10 +258,28 @@ bool WriteJson(const std::filesystem::path& out, const DatFile& dat,
         }
         arr.push_back(std::move(obj));
     }
+    return arr.dump(2);
+}
+
+bool WriteJson(const std::filesystem::path& out, const DatFile& dat,
+               const SchemaTable& table, const std::vector<std::vector<CellValue>>& rows) {
+    const std::string text = JsonText(dat, table, rows);
     std::ofstream f{out};
     if (!f.is_open()) return false;
-    f << arr.dump(2);
+    f << text;
     return true;
+}
+
+// The bytes a text-mode std::ofstream writes for `text` on Windows: every '\n' as "\r\n".
+// The in-memory forms below give exactly the files WriteCsv / WriteJson write.
+static std::vector<uint8_t> TextModeBytes(const std::string& text) {
+    std::vector<uint8_t> bytes;
+    bytes.reserve(text.size() + text.size() / 16 + 16);
+    for (char c : text) {
+        if (c == '\n') bytes.push_back(static_cast<uint8_t>('\r'));
+        bytes.push_back(static_cast<uint8_t>(c));
+    }
+    return bytes;
 }
 
 bool ConvertBytesToCsv(const std::vector<uint8_t>& bytes, const std::string& tableName,
@@ -276,6 +301,30 @@ bool ConvertBytesToJson(const std::vector<uint8_t>& bytes, const std::string& ta
     if (!table) { if (err) *err = "no schema for " + tableName; return false; }
     auto rows = DecodeRows(dat, *table);
     if (!WriteJson(out, dat, *table, rows)) { if (err) *err = "write failed"; return false; }
+    return true;
+}
+
+bool ConvertBytesToCsvBytes(const std::vector<uint8_t>& bytes, const std::string& tableName,
+                            const DatSchema& schema, std::vector<uint8_t>& out, std::string* err) {
+    DatFile dat = Parse(bytes);
+    if (!dat.valid) { if (err) *err = dat.error.empty() ? "parse failed" : dat.error; return false; }
+    const SchemaTable* table = schema.FindTable(tableName);
+    if (!table) { if (err) *err = "no schema for " + tableName; return false; }
+    auto rows = DecodeRows(dat, *table);
+    std::ostringstream text;
+    WriteCsvTo(text, dat, *table, rows);
+    out = TextModeBytes(text.str());
+    return true;
+}
+
+bool ConvertBytesToJsonBytes(const std::vector<uint8_t>& bytes, const std::string& tableName,
+                             const DatSchema& schema, std::vector<uint8_t>& out, std::string* err) {
+    DatFile dat = Parse(bytes);
+    if (!dat.valid) { if (err) *err = dat.error.empty() ? "parse failed" : dat.error; return false; }
+    const SchemaTable* table = schema.FindTable(tableName);
+    if (!table) { if (err) *err = "no schema for " + tableName; return false; }
+    auto rows = DecodeRows(dat, *table);
+    out = TextModeBytes(JsonText(dat, *table, rows));
     return true;
 }
 

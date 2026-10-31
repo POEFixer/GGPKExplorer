@@ -52,8 +52,6 @@ public:
     }
 
 private:
-    bool m_ShowWindow = true;
-
     // Core
     GGPKExp::GGPKManager m_Manager;
     GGPKExp::VirtualTree m_Tree;
@@ -91,7 +89,6 @@ private:
     // State
     bool m_OodleInitialized = false;
     bool m_ggpkLoadPending = false;  // deferred load: show spinner 1 frame, then load
-    bool m_ShowGameRunningModal = false;  // surfaces a warning when Load is clicked while PoE holds the GGPK lock
     bool m_savePending = false;      // async save: show spinner while flushing writes
     std::string m_SelectedFilePath;
     bool m_SelectedIsDirectory = false;
@@ -112,7 +109,7 @@ private:
     // Async task runner (for non-blocking GGPK open)
     std::unique_ptr<GGPKExp::AsyncTaskRunner> m_taskRunner;
     std::future<GGPKExp::Result<void>> m_openFuture;
-    std::future<bool> m_saveFuture;
+    std::future<std::string> m_saveFuture;   // the auto-flush: empty on success, else why
 
     // UI settings (panel state, speed) shared across animation viewers.
     GGPKExp::GGPKExplorerUiSettings m_uiSettings;
@@ -134,8 +131,18 @@ private:
     void PollDatSchema();
     void UseDatSchema(GGPKExp::DatSchema* schema);
     void LoadSettings();
-    void OpenGGPK(const std::string& path);
     std::string ReadSmootherGGPKPath();
+
+    // Archive lifecycle. Every background job (extraction, Save As, content search and
+    // replace, the DAT viewer's reference scan, the auto-flush) holds records of the index
+    // or nodes of the tree: StopBackgroundJobs cancels and joins them all before anything
+    // flushes or closes the archive (Load, Unload, F5, OnDisable go through ResetLoadedState).
+    void StartLoad();
+    void FinishLoad(const GGPKExp::Result<void>& result);
+    void StopBackgroundJobs();
+    void FlushPendingWrites();
+    void ResetLoadedState();
+    bool AnyJobRunning() const;
     void HandleContextMenuActions();
     void NavigateToPath(const std::string& path);
     void ExpandAllRecursive(const std::string& path);

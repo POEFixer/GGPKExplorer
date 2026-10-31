@@ -4,7 +4,6 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-#include <d3d11.h>
 #include <imgui.h>
 
 namespace GGPKExp {
@@ -13,7 +12,6 @@ class TerrainViewer : public IViewer {
 public:
     ~TerrainViewer() = default;
 
-    void Initialize(ID3D11Device* device) { m_device = device; }
     void LoadData(std::vector<uint8_t> data, const std::string& path) override;
     void Clear() override;
     void Render() override;
@@ -26,7 +24,6 @@ public:
     }
 
 private:
-    ID3D11Device* m_device = nullptr;
     Parsers::TdtData m_tdt;
     std::string m_pendingNav;
 

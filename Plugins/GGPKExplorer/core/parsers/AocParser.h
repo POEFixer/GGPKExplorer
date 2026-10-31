@@ -16,8 +16,6 @@ namespace GGPKExp { namespace Parsers {
 //   - version, extendsPath from header
 //   - blocks[] with each top-level block
 //   - each block's `properties` (generic AocRawNode tree)
-//   - typed views (clientAnim, skinMesh, animController) populated for the 3 known block types
-//   - warnings[] for soft issues (unknown keys, duplicate socket names, etc.)
 Result<AocFile> ParseAoc(const std::vector<AocLine>& lines);
 
 }} // namespace GGPKExp::Parsers

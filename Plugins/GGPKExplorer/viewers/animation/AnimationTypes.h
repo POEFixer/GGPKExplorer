@@ -7,8 +7,9 @@
 namespace GGPKExp { namespace Animation {
 
 // Keyframe entries — strides match wire-format A / B / C arrays.
-// See BONES.md §5.3 + §5.7. Channel mapping discovered via AnimDump (witch
-// attack1_2hsword): A holds scale, B holds full-quaternion rotation curves
+// See BONES.md §5.3 + §5.7. Channel mapping discovered by dumping the
+// keyframes of witch attack1_2hsword (with the AnimDump dev tool, since
+// removed): A holds scale, B holds full-quaternion rotation curves
 // (xyzw), C holds translation. D/E/F are unused for character animations
 // in observed POE2 builds.
 struct KeyT  { float time; float value[3]; };    // C  (16 B) — translation
@@ -50,28 +51,5 @@ struct AnimationClip {
 struct BonePose {
     float local[16];
 };
-
-// One playback layer (Phase 4.2 scope C — multi-track composition).
-// AnimationPlayer holds up to kMaxLayers of these. Layer 0 is the base
-// track; layers 1..N are additive with optional bone-group mask.
-//
-// User decisions 2026-04-14 (spec §16.1):
-// - maxLayers = 4 (base + 3 additives)
-// - per-layer bone-group masking via maskBoneGroupIdx (Phase 3 .aoc BoneGroup)
-// - crossfade NOT modelled in Phase 4.2 (user ramps weight manually)
-// - composition: simple additive math (see PoseComposer)
-struct AnimationLayer {
-    int   animIndex        = -1;      // index into AstSkeleton::animations; -1 = empty slot
-    float weight           = 1.0f;    // blend weight 0..1 (user-controlled)
-    float speed            = 1.0f;    // playback speed multiplier
-    float timeSeconds      = 0.0f;    // current playhead
-    bool  playing          = false;   // independent play/pause
-    bool  loop             = true;    // per-layer loop flag (overrides clip.playbackType for additives)
-    int   maskBoneGroupIdx = -1;      // index into ClientAnimCtrl::boneGroups; -1 = full-body
-    bool  maskInverted     = false;   // is_masked_override semantic
-    bool  additive         = false;   // layer 0: false; layers 1..N: true
-};
-
-constexpr std::size_t kMaxLayers = 4;
 
 }} // namespace GGPKExp::Animation

@@ -1,14 +1,13 @@
 #pragma once
 #include "../core/GGPKManager.h"
 #include "../core/VirtualTree.h"
+#include "../core/ExtractJob.h"
 #include "StatusBar.h"
 #include "TreePanel.h"
 #include "ContentPanel.h"
 #include <string>
 #include <vector>
-#include <set>
-#include <thread>
-#include <atomic>
+#include <memory>
 #include <functional>
 #include <imgui.h>
 
@@ -28,10 +27,13 @@ struct ExtractOptions {
     std::string targetDirPath;
 };
 
-/// Handles all extract/replace operations and the Extract Options modal.
+/// Handles all extract/replace operations and the Extract Options modal. A folder or
+/// selection extraction runs as an ExtractJob (core/ExtractJob.h) on its own threads.
 class ExtractDialog {
 public:
     using LogCallback = std::function<void(const char* category, const char* message)>;
+
+    ~ExtractDialog();
 
     void SetManager(GGPKManager* mgr) { m_manager = mgr; }
     void SetTree(VirtualTree* tree) { m_tree = tree; }
@@ -42,29 +44,31 @@ public:
 
     /// Open the Extract Options modal for a directory.
     void OpenExtractOptions(const std::string& dirPath);
-    bool IsExtractOptionsOpen() const { return m_showExtractOptions; }
 
-    /// Render the Extract Options modal (call every frame).
+    /// Render the Extract Options modal and pass the running job's progress to the status
+    /// bar (call every frame).
     void RenderExtractOptions();
 
     /// Is an extraction currently running?
-    bool IsExtractRunning() const { return m_extractRunning.load(); }
+    bool IsExtractRunning() const { return m_job && m_job->IsRunning(); }
 
-    /// Cancel a running extraction.
-    void CancelExtract() { m_extractRunning.store(false); }
+    /// Ask a running extraction to stop (the Cancel button); it ends on its own thread.
+    void CancelExtract() { if (m_job) m_job->Cancel(); }
 
-    /// Wait for the extract thread to finish and join it.
+    /// Cancel a running extraction and wait for it: before the archive closes.
     void JoinExtractThread();
 
     // Individual extract/replace operations
     void DoExtractFile();
     void DoReplaceFile();
-    void DoExtractDirectory();
     void DoExtractSelectedFiles();
 
 private:
     void CollectExtensionStats(const std::string& dirPath);
     void ExtractDirectoryFiltered();
+    std::wstring BrowseForOutputFolder(const char* titleKey) const;
+    void StartJob(std::vector<ExtractJob::Item> items, std::wstring outputDir,
+                  int64_t skipLargerThan, const char* progressKey);
 
     // All non-owning, lifetime guaranteed by GGPKExplorer
     GGPKManager* m_manager = nullptr;
@@ -76,8 +80,7 @@ private:
 
     bool m_showExtractOptions = false;
     ExtractOptions m_extractOptions;
-    std::thread m_extractThread;
-    std::atomic<bool> m_extractRunning{ false };
+    std::unique_ptr<ExtractJob> m_job;
 };
 
 } // namespace GGPKExp

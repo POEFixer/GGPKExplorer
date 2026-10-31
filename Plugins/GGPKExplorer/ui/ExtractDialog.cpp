@@ -1,11 +1,13 @@
 #include "ExtractDialog.h"
 #include "UiText.h"
+#include "../core/PathUtils.h"
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
 #include <cstdarg>
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -16,26 +18,6 @@
 #include <shlobj.h>
 
 namespace fs = std::filesystem;
-
-// Helper: Convert wide string to UTF-8 (duplicated from GGPKExplorer.cpp)
-static std::string WideToUtf8(const wchar_t* wstr) {
-    if (!wstr || !wstr[0]) return {};
-    int needed = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
-    if (needed <= 0) return {};
-    std::string result(needed - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, result.data(), needed, nullptr, nullptr);
-    return result;
-}
-
-// Helper: Convert UTF-8 to wide string (duplicated from GGPKExplorer.cpp)
-static std::wstring Utf8ToWide(const std::string& str) {
-    if (str.empty()) return {};
-    int needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
-    if (needed <= 0) return {};
-    std::wstring result(needed - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, result.data(), needed);
-    return result;
-}
 
 namespace GGPKExp {
 
@@ -62,10 +44,12 @@ static void LogFmt(const ExtractDialog::LogCallback& log, const char* category, 
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+ExtractDialog::~ExtractDialog() {
+    JoinExtractThread();
+}
+
 void ExtractDialog::JoinExtractThread() {
-    m_extractRunning.store(false);
-    if (m_extractThread.joinable())
-        m_extractThread.join();
+    if (m_job) m_job->CancelAndJoin();
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +98,12 @@ void ExtractDialog::CollectExtensionStats(const std::string& dirPath) {
 // ---------------------------------------------------------------------------
 
 void ExtractDialog::RenderExtractOptions() {
+    // The running job's progress for the status bar (the job itself knows no UI).
+    if (m_statusBar && m_job && m_job->IsRunning()) {
+        const size_t total = m_job->Total();
+        m_statusBar->progress.store(total ? static_cast<float>(m_job->Done()) / static_cast<float>(total) : 0.0f);
+    }
+
     if (!m_showExtractOptions) return;
 
     const char* title = I18n::TrId("extract_title");
@@ -240,7 +230,7 @@ void ExtractDialog::DoExtractFile() {
     if (entry.isDirectory || !entry.nodePtr) return;
 
     // Determine default filename and filter from extension
-    std::wstring wideName = Utf8ToWide(entry.name);
+    std::wstring wideName = PathUtils::Utf8ToWide(entry.name);
 
     // Double-null-terminated filter string for OPENFILENAMEW, labels in the program language.
     DialogFilter filter;
@@ -249,7 +239,7 @@ void ExtractDialog::DoExtractFile() {
         std::string ext = entry.name.substr(dotPos);
         std::string extUpper = ext.substr(1);
         for (auto& c : extUpper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        filter.Add(I18n::TrF("dialog_filter_ext_files", { { "ext", extUpper } }), L"*" + Utf8ToWide(ext));
+        filter.Add(I18n::TrF("dialog_filter_ext_files", { { "ext", extUpper } }), L"*" + PathUtils::Utf8ToWide(ext));
     }
     filter.Add(I18n::Tr("dialog_filter_all_files"), L"*.*");
     const std::wstring title = Wide(I18n::Tr("dialog_extract_file_as"));
@@ -269,22 +259,20 @@ void ExtractDialog::DoExtractFile() {
 
     if (!GetSaveFileNameW(&ofn)) return;
 
-    // Read from GGPK
+    // Read from GGPK (an empty file is a file too: it is written empty)
     auto readResult = m_manager->ReadFile(entry.nodePtr);
-    if (!readResult || readResult.value.empty()) {
-        LogFmt(m_log, "Error", "GGPKExplorer: failed to read file: %s", selPath.c_str());
+    if (!readResult) {
+        LogFmt(m_log, "Error", "GGPKExplorer: failed to read file %s: %s", selPath.c_str(), readResult.error.c_str());
         return;
     }
-    auto& data = readResult.value;
+    const auto& data = readResult.value;
 
-    // Write to disk
-    std::ofstream outFile{ fs::path(savePath), std::ios::binary };
-    if (!outFile.is_open()) {
-        LogFmt(m_log, "Error", "GGPKExplorer: failed to write to disk");
+    // Write to disk (wide path; a short write is a failure, never a half file)
+    std::string writeError;
+    if (!WriteWholeFile(savePath, data.data(), data.size(), writeError)) {
+        LogFmt(m_log, "Error", "GGPKExplorer: failed to write %s: %s", entry.name.c_str(), writeError.c_str());
         return;
     }
-    outFile.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-    outFile.close();
 
     LogFmt(m_log, "Info", "GGPKExplorer: extracted %s (%lld bytes)", entry.name.c_str(),
            static_cast<long long>(data.size()));
@@ -329,15 +317,23 @@ void ExtractDialog::DoReplaceFile() {
         return;
     }
 
-    auto fileSize = inFile.tellg();
+    const auto fileSize = inFile.tellg();
+    if (fileSize < 0) {
+        LogFmt(m_log, "Error", "GGPKExplorer: failed to read replacement file");
+        return;
+    }
     inFile.seekg(0, std::ios::beg);
     std::vector<uint8_t> data(static_cast<size_t>(fileSize));
-    inFile.read(reinterpret_cast<char*>(data.data()), fileSize);
+    if (!data.empty() && !inFile.read(reinterpret_cast<char*>(data.data()), fileSize)) {
+        LogFmt(m_log, "Error", "GGPKExplorer: failed to read replacement file");
+        return;
+    }
     inFile.close();
 
     // Write into GGPK
-    if (!m_manager->WriteFile(entry.nodePtr, data)) {
-        LogFmt(m_log, "Error", "GGPKExplorer: WriteFile failed for %s", selPath.c_str());
+    std::string writeError;
+    if (!m_manager->WriteFile(entry.nodePtr, data, &writeError)) {
+        LogFmt(m_log, "Error", "GGPKExplorer: WriteFile failed for %s: %s", selPath.c_str(), writeError.c_str());
         return;
     }
 
@@ -352,26 +348,14 @@ void ExtractDialog::DoReplaceFile() {
 }
 
 // ---------------------------------------------------------------------------
-// ExtractDirectory
+// Output folder picker (folder and selection extractions)
 // ---------------------------------------------------------------------------
 
-void ExtractDialog::DoExtractDirectory() {
-    if (!m_treePanel || !m_tree || !m_manager || !m_statusBar) return;
-
-    const auto& selPath = m_treePanel->GetSelectedPath();
-    if (selPath.empty()) return;
-
-    // Already extracting?
-    if (m_extractRunning.load()) {
-        LogFmt(m_log, "Info", "GGPKExplorer: extraction already in progress");
-        return;
-    }
-
-    // Browse for output directory
+std::wstring ExtractDialog::BrowseForOutputFolder(const char* titleKey) const {
     HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     bool comInit = SUCCEEDED(comHr);
 
-    const std::wstring browseTitle = Wide(I18n::Tr("dialog_output_dir_extract"));
+    const std::wstring browseTitle = Wide(I18n::Tr(titleKey));
     BROWSEINFOW bi = {};
     bi.lpszTitle = browseTitle.c_str();
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
@@ -386,84 +370,54 @@ void ExtractDialog::DoExtractDirectory() {
         CoTaskMemFree(pidl);
     }
     if (comInit) CoUninitialize();
+    return outputDirW;
+}
 
-    if (outputDirW.empty()) return;
+// ---------------------------------------------------------------------------
+// StartJob: the ExtractJob of a folder or a selection
+// ---------------------------------------------------------------------------
 
-    std::string outputDir = WideToUtf8(outputDirW.c_str());
-
-    // Wait for any previous thread
-    if (m_extractThread.joinable())
-        m_extractThread.join();
-
-    // Gather all files under the selected directory
-    struct ExtractEntry {
-        std::string relativePath;
-        void* nodePtr;
-    };
-    std::vector<ExtractEntry> filesToExtract;
-
-    size_t prefixLen = ParentPrefixLen(selPath);
-
-    m_tree->ForEachFileUnder(selPath, [&](const std::string& fullPath, const std::string& name, int64_t /*fileSize*/, void* nodePtr) {
-        if (!nodePtr) return;
-        std::string rel = (fullPath.size() > prefixLen) ? fullPath.substr(prefixLen) : name;
-        filesToExtract.push_back({ rel, nodePtr });
-    });
-
-    if (filesToExtract.empty()) {
-        LogFmt(m_log, "Info", "GGPKExplorer: no files to extract in %s", selPath.c_str());
+void ExtractDialog::StartJob(std::vector<ExtractJob::Item> items, std::wstring outputDir,
+                             int64_t skipLargerThan, const char* progressKey) {
+    GGPK::Index* index = m_manager ? m_manager->GetIndex() : nullptr;
+    if (!index || !m_statusBar) return;
+    if (!m_job) m_job = std::make_unique<ExtractJob>();
+    if (m_job->IsRunning()) {
+        LogFmt(m_log, "Info", "GGPKExplorer: extraction already in progress");
         return;
     }
 
-    int totalFiles = static_cast<int>(filesToExtract.size());
+    ExtractJob::Options options;
+    options.outputDir = std::move(outputDir);
+    options.skipLargerThan = skipLargerThan;
+    options.readWorkers = ExtractJob::DefaultReadWorkers();
+
     m_statusBar->progressActive.store(true);
     m_statusBar->progress.store(0.0f);
-    m_statusBar->progressLabel = LocText{ I18n::Key("progress_extracting"), {} };
-    m_extractRunning.store(true);
+    m_statusBar->progressLabel = LocText{ progressKey, {} };
 
-    m_extractThread = std::thread([this, filesToExtract = std::move(filesToExtract), outputDir, totalFiles]() {
-        int extracted = 0;
-        int failed = 0;
-
-        for (const auto& fe : filesToExtract) {
-            if (!m_extractRunning.load()) break;
-
-            fs::path outPath = fs::path(outputDir) / fs::path(fe.relativePath);
-
-            fs::path parentDir = outPath.parent_path();
-            if (!fs::exists(parentDir)) {
-                std::error_code ec;
-                fs::create_directories(parentDir, ec);
-                if (ec) {
-                    ++failed;
-                    continue;
-                }
-            }
-
-            auto readRes = m_manager->ReadFile(fe.nodePtr);
-            if (!readRes || readRes.value.empty()) {
-                ++failed;
-            } else {
-                std::ofstream outFile{ outPath, std::ios::binary };
-                if (outFile.is_open()) {
-                    outFile.write(reinterpret_cast<const char*>(readRes.value.data()),
-                                  static_cast<std::streamsize>(readRes.value.size()));
-                    ++extracted;
-                } else {
-                    ++failed;
-                }
-            }
-
-            float pct = static_cast<float>(extracted + failed) / static_cast<float>(totalFiles);
-            m_statusBar->progress.store(pct);
-        }
-
-        m_statusBar->progressActive.store(false);
-        m_extractRunning.store(false);
-
+    // The summary is logged from the job's thread (the drawing may be paused meanwhile); it
+    // uses only what outlives the job (the log callback, GGPKExplorer's status bar).
+    LogCallback log = m_log;
+    StatusBarState* statusBar = m_statusBar;
+    auto onFinished = [log, statusBar](const ExtractJob::Summary& s) {
+        statusBar->progressActive.store(false);
         // The result goes to the (English) log: the status bar hides its label with the bar.
-        LogFmt(m_log, "Info", "GGPKExplorer: extracted %d/%d files (%d failed)", extracted, totalFiles, failed);
-    });
+        if (!s.fatalError.empty())
+            LogFmt(log, "Error", "GGPKExplorer: extraction stopped: %s", s.fatalError.c_str());
+        LogFmt(log, "Info", "GGPKExplorer: extracted %zu/%zu files (%zu failed, %zu skipped) in %.1f s%s",
+               s.written, s.total, s.failed, s.skipped, s.seconds, s.cancelled ? ", cancelled" : "");
+        for (const auto& error : s.sampleErrors)
+            LogFmt(log, "Error", "GGPKExplorer: not extracted: %s", error.c_str());
+        if (s.failed > s.sampleErrors.size())
+            LogFmt(log, "Error", "GGPKExplorer: ... and %zu more files not extracted",
+                   s.failed - s.sampleErrors.size());
+    };
+
+    if (!m_job->Start(*index, std::move(items), std::move(options), std::move(onFinished))) {
+        m_statusBar->progressActive.store(false);
+        LogFmt(m_log, "Error", "GGPKExplorer: could not start the extraction");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +430,7 @@ void ExtractDialog::ExtractDirectoryFiltered() {
     const auto& selPath = m_extractOptions.targetDirPath;
     if (selPath.empty()) return;
 
-    if (m_extractRunning.load()) {
+    if (IsExtractRunning()) {
         LogFmt(m_log, "Info", "GGPKExplorer: extraction already in progress");
         return;
     }
@@ -504,41 +458,14 @@ void ExtractDialog::ExtractDirectoryFiltered() {
         }
     }
 
-    // Browse for output directory
-    HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    bool comInit = SUCCEEDED(comHr);
-
-    const std::wstring browseTitle = Wide(I18n::Tr("dialog_output_dir_filtered"));
-    BROWSEINFOW bi = {};
-    bi.lpszTitle = browseTitle.c_str();
-    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-
-    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
-    std::wstring outputDirW;
-    if (pidl) {
-        wchar_t folderPath[MAX_PATH] = {};
-        if (SHGetPathFromIDListW(pidl, folderPath)) {
-            outputDirW = folderPath;
-        }
-        CoTaskMemFree(pidl);
-    }
-    if (comInit) CoUninitialize();
-
+    std::wstring outputDirW = BrowseForOutputFolder(I18n::Key("dialog_output_dir_filtered"));
     if (outputDirW.empty()) return;
 
-    std::string outputDir = WideToUtf8(outputDirW.c_str());
-
-    if (m_extractThread.joinable())
-        m_extractThread.join();
-
-    // Gather files, applying extension and size filters
-    struct ExtractEntry {
-        std::string relativePath;
-        void* nodePtr;
-    };
-    std::vector<ExtractEntry> filesToExtract;
-
-    size_t prefixLen = ParentPrefixLen(selPath);
+    // Gather files, applying extension and size filters. The paths are the tree's own node
+    // strings: they stay put until the tree is cleared, which waits for the job.
+    std::vector<ExtractJob::Item> filesToExtract;
+    const uint32_t prefixLen = static_cast<uint32_t>(ParentPrefixLen(selPath));
+    const bool skipLarge = m_extractOptions.skipLargeFiles;
 
     m_tree->ForEachFileUnder(selPath, [&](const std::string& fullPath, const std::string& name, int64_t fileSize, void* nodePtr) {
         if (!nodePtr) return;
@@ -553,10 +480,10 @@ void ExtractDialog::ExtractDirectoryFiltered() {
         }
         if (includedExts.find(ext) == includedExts.end()) return;
 
-        if (m_extractOptions.skipLargeFiles && fileSize > maxBytes) return;
+        if (skipLarge && fileSize > maxBytes) return;
 
-        std::string rel = (fullPath.size() > prefixLen) ? fullPath.substr(prefixLen) : name;
-        filesToExtract.push_back({ rel, nodePtr });
+        filesToExtract.push_back({ static_cast<GGPK::FileRecord*>(nodePtr), &fullPath,
+                                   fullPath.size() > prefixLen ? prefixLen : 0u });
     });
 
     if (filesToExtract.empty()) {
@@ -564,62 +491,8 @@ void ExtractDialog::ExtractDirectoryFiltered() {
         return;
     }
 
-    int totalFiles = static_cast<int>(filesToExtract.size());
-    m_statusBar->progressActive.store(true);
-    m_statusBar->progress.store(0.0f);
-    m_statusBar->progressLabel = LocText{ I18n::Key("progress_extracting_filtered"), {} };
-    m_extractRunning.store(true);
-
-    bool skipLarge = m_extractOptions.skipLargeFiles;
-    m_extractThread = std::thread([this, filesToExtract = std::move(filesToExtract), outputDir, totalFiles, maxBytes, skipLarge]() {
-        int extracted = 0;
-        int failed = 0;
-        int skipped = 0;
-
-        for (const auto& fe : filesToExtract) {
-            if (!m_extractRunning.load()) break;
-
-            fs::path outPath = fs::path(outputDir) / fs::path(fe.relativePath);
-
-            fs::path parentDir = outPath.parent_path();
-            if (!fs::exists(parentDir)) {
-                std::error_code ec;
-                fs::create_directories(parentDir, ec);
-                if (ec) {
-                    ++failed;
-                    continue;
-                }
-            }
-
-            auto readRes = m_manager->ReadFile(fe.nodePtr);
-            if (!readRes || readRes.value.empty()) {
-                ++failed;
-            } else {
-                if (skipLarge && static_cast<int64_t>(readRes.value.size()) > maxBytes) {
-                    ++skipped;
-                } else {
-                    std::ofstream outFile{ outPath, std::ios::binary };
-                    if (outFile.is_open()) {
-                        outFile.write(reinterpret_cast<const char*>(readRes.value.data()),
-                                      static_cast<std::streamsize>(readRes.value.size()));
-                        ++extracted;
-                    } else {
-                        ++failed;
-                    }
-                }
-            }
-
-            float pct = static_cast<float>(extracted + failed + skipped) / static_cast<float>(totalFiles);
-            m_statusBar->progress.store(pct);
-        }
-
-        m_statusBar->progressActive.store(false);
-        m_extractRunning.store(false);
-
-        // The result goes to the (English) log: the status bar hides its label with the bar.
-        LogFmt(m_log, "Info", "GGPKExplorer: extracted %d/%d files (%d failed, %d skipped)",
-               extracted, totalFiles, failed, skipped);
-    });
+    StartJob(std::move(filesToExtract), std::move(outputDirW), skipLarge ? maxBytes : -1,
+             I18n::Key("progress_extracting_filtered"));
 }
 
 // ---------------------------------------------------------------------------
@@ -629,118 +502,42 @@ void ExtractDialog::ExtractDirectoryFiltered() {
 void ExtractDialog::DoExtractSelectedFiles() {
     if (!m_treePanel || !m_tree || !m_manager || !m_statusBar) return;
 
-    if (m_extractRunning.load()) {
+    if (IsExtractRunning()) {
         LogFmt(m_log, "Info", "GGPKExplorer: extraction already in progress");
         return;
     }
 
-    // Collect all files: directly selected files + files under selected directories
-    struct FileInfo {
-        std::string relativePath;
-        void* nodePtr;
-    };
-    std::vector<FileInfo> files;
-    std::set<std::string> addedPaths;
+    // Collect all files: directly selected files + files under selected directories. Each
+    // file once (the first selected entry that holds it decides its output folder).
+    std::vector<ExtractJob::Item> files;
+    std::unordered_set<void*> added;
 
     const auto& flatList = m_tree->GetFlatList();
     for (int idx : m_treePanel->GetSelectedIndices()) {
         if (idx < 0 || idx >= static_cast<int>(flatList.size())) continue;
         const auto& entry = flatList[static_cast<uint32_t>(idx)];
+        if (!entry.isDirectory && !entry.nodePtr) continue;
 
         // Per-entry strip prefix: the parent path of the selected entry.
         // This preserves the selected folder/file name at the top of the output.
-        size_t stripLen = ParentPrefixLen(entry.fullPath);
+        const uint32_t stripLen = static_cast<uint32_t>(ParentPrefixLen(entry.fullPath));
 
-        if (entry.isDirectory) {
-            m_tree->ForEachFileUnder(entry.fullPath,
-                [&](const std::string& fp, const std::string& nm, int64_t, void* np) {
-                    if (!np || !addedPaths.insert(fp).second) return;
-                    std::string rel = (fp.size() > stripLen) ? fp.substr(stripLen) : nm;
-                    files.push_back({ rel, np });
-                });
-        } else if (entry.nodePtr) {
-            if (!addedPaths.insert(entry.fullPath).second) continue;
-            std::string rel = (entry.fullPath.size() > stripLen)
-                ? entry.fullPath.substr(stripLen)
-                : entry.name;
-            files.push_back({ rel, entry.nodePtr });
-        }
+        // A selected file walks to itself: the visitor hands out the tree node's own path
+        // string, which (unlike the flat list's copy) stays put while the job runs.
+        m_tree->ForEachFileUnder(entry.fullPath,
+            [&](const std::string& fp, const std::string& /*nm*/, int64_t, void* np) {
+                if (!np || !added.insert(np).second) return;
+                files.push_back({ static_cast<GGPK::FileRecord*>(np), &fp,
+                                  fp.size() > stripLen ? stripLen : 0u });
+            });
     }
 
     if (files.empty()) return;
 
-    // Browse for output directory
-    HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    bool comInit = SUCCEEDED(comHr);
-
-    const std::wstring browseTitle = Wide(I18n::Tr("dialog_output_dir"));
-    BROWSEINFOW bi = {};
-    bi.lpszTitle = browseTitle.c_str();
-    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-
-    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
-    std::wstring outputDirW;
-    if (pidl) {
-        wchar_t folderPath[MAX_PATH] = {};
-        if (SHGetPathFromIDListW(pidl, folderPath)) {
-            outputDirW = folderPath;
-        }
-        CoTaskMemFree(pidl);
-    }
-    if (comInit) CoUninitialize();
-
+    std::wstring outputDirW = BrowseForOutputFolder(I18n::Key("dialog_output_dir"));
     if (outputDirW.empty()) return;
 
-    std::string outputDir = WideToUtf8(outputDirW.c_str());
-
-    if (m_extractThread.joinable())
-        m_extractThread.join();
-
-    int totalFiles = static_cast<int>(files.size());
-    m_statusBar->progressActive.store(true);
-    m_statusBar->progress.store(0.0f);
-    m_statusBar->progressLabel = LocText{ I18n::Key("progress_extracting_selected"), {} };
-    m_extractRunning.store(true);
-
-    m_extractThread = std::thread([this, files = std::move(files), outputDir, totalFiles]() {
-        int extracted = 0;
-        int failed = 0;
-
-        for (const auto& fe : files) {
-            if (!m_extractRunning.load()) break;
-
-            fs::path outPath = fs::path(outputDir) / fs::path(fe.relativePath);
-
-            fs::path parentDir = outPath.parent_path();
-            if (!fs::exists(parentDir)) {
-                std::error_code ec;
-                fs::create_directories(parentDir, ec);
-            }
-
-            auto readRes = m_manager->ReadFile(fe.nodePtr);
-            if (!readRes || readRes.value.empty()) {
-                ++failed;
-            } else {
-                std::ofstream outFile{ outPath, std::ios::binary };
-                if (outFile.is_open()) {
-                    outFile.write(reinterpret_cast<const char*>(readRes.value.data()),
-                                  static_cast<std::streamsize>(readRes.value.size()));
-                    ++extracted;
-                } else {
-                    ++failed;
-                }
-            }
-
-            float pct = static_cast<float>(extracted + failed) / static_cast<float>(totalFiles);
-            m_statusBar->progress.store(pct);
-        }
-
-        m_statusBar->progressActive.store(false);
-        m_extractRunning.store(false);
-
-        // The result goes to the (English) log: the status bar hides its label with the bar.
-        LogFmt(m_log, "Info", "GGPKExplorer: extracted %d/%d files (%d failed)", extracted, totalFiles, failed);
-    });
+    StartJob(std::move(files), std::move(outputDirW), -1, I18n::Key("progress_extracting_selected"));
 }
 
 } // namespace GGPKExp

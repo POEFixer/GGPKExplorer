@@ -45,9 +45,6 @@ public:
                         AnimationClip& out,
                         std::string* warning = nullptr);
 
-    bool IsBlobReady() const { return m_blobReady; }
-    const std::vector<uint8_t>& GetBlob() const { return m_blob; }
-
 private:
     std::vector<uint8_t> m_blob;                // decompressed keyframe bytes
     bool m_blobReady = false;

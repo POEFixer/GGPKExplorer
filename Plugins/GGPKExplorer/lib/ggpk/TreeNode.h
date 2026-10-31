@@ -51,6 +51,14 @@ public:
         return ptr;
     }
 
+    /// Append a new child directory (no lookup; Index::BuildTree knows it is new).
+    DirectoryNode* AddChildDir(std::string name) {
+        auto node = std::make_unique<DirectoryNode>(std::move(name), this);
+        auto* ptr = node.get();
+        m_children.push_back(std::move(node));
+        return ptr;
+    }
+
     /// Add a child node.
     void AddChild(std::unique_ptr<ITreeNode> child) {
         m_children.push_back(std::move(child));

@@ -9,7 +9,6 @@
 namespace GGPKExp {
 
 class GGPKManager;
-class VirtualTree;
 
 /// Per-material blend mode for the 3D preview.
 /// Opaque: standard rendering, alpha output forced to 1.0.
@@ -19,30 +18,13 @@ enum class BlendMode : uint8_t {
     AlphaBlend = 1,
 };
 
-/// Per-material texture data for a submesh
+/// Per-material diffuse texture for a submesh
 struct MaterialTex {
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;       // diffuse/albedo
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> normalSrv; // normal map
     std::string matPath;
     std::string ddsPath;
-    std::string normalDdsPath;
     bool loaded = false;
     BlendMode blendMode = BlendMode::Opaque;
-    bool normalLoaded = false;
-};
-
-/// Structured texture pipeline info for the Info tab
-struct TexLoadInfo {
-    std::string matPath;
-    bool matFound = false;
-    size_t matSize = 0;
-    std::string matJsonError;
-    std::vector<std::string> allDdsPaths;
-    std::string selectedDdsPath;
-    bool ddsFound = false;
-    size_t ddsSize = 0;
-    bool gpuLoaded = false;
-    std::string gpuError;
 };
 
 /// Manages loading and caching of mesh material textures from GGPK archives.
@@ -51,12 +33,13 @@ public:
     void Initialize(ID3D11Device* device);
     void Clear();
 
-    /// Create the 1x1 white fallback texture and 1x1 flat normal fallback
-    bool CreateFallbackTextures();
+    /// Create the 1x1 white fallback texture
+    bool CreateFallbackTexture();
 
-    /// Load texture from .sm -> .mat -> .dds chain (legacy single-texture path)
-    bool LoadTextureFromSm(const std::vector<uint8_t>& smData,
-                           GGPKManager* mgr, VirtualTree* tree);
+    /// Legacy single-texture path: the first .mat named in the .sm text, its
+    /// diffuse .dds replacing the white fallback texture. Used when the
+    /// per-submesh materials did not load.
+    bool LoadTextureFromSm(const std::vector<uint8_t>& smData, GGPKManager* mgr);
 
     /// Load all materials referenced by `.sm`, expanding run-length counts into a
     /// per-submesh `m_materialTextures` array of length `submeshCount`.
@@ -66,30 +49,25 @@ public:
 
     // ----- Accessors -----
 
+    /// The legacy texture replaced the white fallback.
     bool HasTexture() const { return m_hasTexture; }
+    const std::string& FallbackDdsPath() const { return m_fallbackDdsPath; }
     const std::vector<MaterialTex>& GetMaterials() const { return m_materialTextures; }
 
     ID3D11ShaderResourceView* GetFallbackSRV() const { return m_texSRV.Get(); }
-    ID3D11ShaderResourceView* GetFlatNormalSRV() const { return m_flatNormalSRV.Get(); }
-
-    const TexLoadInfo& GetTexInfo() const { return m_texInfo; }
-    const std::string& GetTexLog() const { return m_texLog; }
 
 private:
     ID3D11Device* m_device = nullptr;  // non-owning, lifetime guaranteed by host (ImGui D3D device)
 
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_texSRV;       // fallback white texture
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_flatNormalSRV; // flat normal fallback
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_texSRV;  // fallback (white, or the legacy texture)
     std::vector<MaterialTex> m_materialTextures;
     bool m_hasTexture = false;
+    std::string m_fallbackDdsPath;
 
-    TexLoadInfo m_texInfo;
-    std::string m_texLog;
-
-    bool CreateWhiteTexture();
-    bool CreateFlatNormalTexture();
+    /// .mat -> its diffuse .dds on the GPU (nullptr when any step fails).
+    /// outBlend is set once the .mat parses, even when its texture does not load.
     ID3D11ShaderResourceView* LoadTextureFromMat(const std::string& matPath,
-                                                  GGPKManager* mgr, TexLoadInfo& info,
+                                                  GGPKManager* mgr, std::string& outDdsPath,
                                                   BlendMode& outBlend);
 };
 

@@ -43,17 +43,11 @@ public:
     static constexpr float kMinWidth = 300.0f;
     static constexpr float kMaxWidth = 800.0f;
 
-    bool IsDirty() const { return m_dirty; }
-
     // Called when user picks another cell and buffer is dirty.
     // Returns true if selection may proceed immediately (clean buffer).
     // Returns false if caller should defer — the confirm modal will appear
     // next frame to let the user pick Apply/Discard/Stay.
     bool PromptDirtyConfirm(int newRow, int newCol);
-
-    // Which (row,col) is the panel currently editing. Returns -1/-1 if closed.
-    int EditingRow() const { return m_row; }
-    int EditingCol() const { return m_col; }
 
 private:
     DatViewer* m_owner = nullptr;
